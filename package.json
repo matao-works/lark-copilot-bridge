@@ -1,0 +1,32 @@
+{
+  "name": "lark-copilot-bridge",
+  "version": "0.1.0",
+  "description": "把飞书消息桥接到本地 GitHub Copilot CLI 的轻量机器人",
+  "type": "module",
+  "bin": {
+    "lark-copilot-bridge": "dist/lark-copilot-bridge.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "start": "tsup && node dist/lark-copilot-bridge.js",
+    "dev": "node --import tsx bin/lark-copilot-bridge.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "dependencies": {
+    "@larksuite/channel": "^0.4.0",
+    "@larksuiteoapi/node-sdk": "^1.71.1",
+    "dotenv": "^16.4.5",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT"
+}
