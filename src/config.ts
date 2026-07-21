@@ -7,7 +7,7 @@
  *
  * ACL 变更同时改内存 BridgeConfig + 磁盘，避免「提示成功但当场不生效」。
  */
-import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -18,6 +18,10 @@ export type { AppCredentials } from './types.js';
 
 const CONFIG_DIR = resolve(homedir(), '.lark-copilot-bridge');
 const CONFIG_FILE = resolve(CONFIG_DIR, 'config.json');
+
+// 全局安装时从固定目录读配置；当前目录 .env 可覆盖
+loadEnv({ path: resolve(CONFIG_DIR, '.env') });
+loadEnv();
 
 export interface BridgeConfig {
   credentials: AppCredentials;

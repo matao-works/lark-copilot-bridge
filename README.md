@@ -1,126 +1,153 @@
 # lark-copilot-bridge
 
-把飞书消息桥接到本地 GitHub Copilot CLI 的轻量机器人。**扫码即用**——首次运行终端显示二维码，飞书扫码自动创建应用，零手动配置。回复用**流式卡片**实时更新。
+在飞书里和**本机** [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli) 对话。消息走 WebSocket 长连接，回复用流式卡片实时刷新。
 
-照着 [`zarazhangrui/lark-coding-agent-bridge`](https://github.com/zarazhangrui/lark-coding-agent-bridge)（桥接 Claude Code / Codex）的实现方式从零手写，改为桥接 GitHub Copilot CLI。
+适合个人自用：扫码创建飞书应用，凭证本地保存，默认不锁聊天白名单。
 
-> 学习笔记见 [LEARNINGS.md](./LEARNINGS.md)，记录了对原项目源码的逐模块分析和本项目的实现对照。
+## 快速开始
 
-## 体验：一条命令上线
+**前置：** Node.js ≥ 20，且本机已安装并登录 Copilot CLI：
 
 ```bash
-npm start
+curl -fsSL https://gh.io/copilot-install | bash
+copilot   # 首次运行按提示 /login
 ```
 
+### 方式一：直接运行（推荐）
+
+```bash
+npx lark-copilot-bridge
 ```
-检查 copilot CLI...
+
+### 方式二：全局安装
+
+```bash
+npm install -g lark-copilot-bridge
+lark-copilot-bridge
+```
+
+npm 尚未发布时，可从 GitHub 安装：
+
+```bash
+npm install -g github:ma345564280/lark-copilot-bridge
+```
+
+或使用安装脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ma345564280/lark-copilot-bridge/main/scripts/install.sh | bash
+```
+
+**无需 clone 仓库，无需在项目目录里 `npm start`。**
+
+### 首次运行
+
+终端出现二维码 → 飞书 App 扫码 → 自动创建应用并保存凭证到 `~/.lark-copilot-bridge/config.json`。
+
+```
 ✓ copilot CLI 已就绪
-未检测到飞书应用配置，进入扫码创建向导。
-
 请用飞书 App 扫描以下二维码完成应用创建：
-
-  ▄▄▄▄▄▄▄ ▄▄▄▄ ▄▄▄▄▄▄▄
-  █ ▄▄▄ █ ▀▀▀  █ ▄▄▄ █
-  ...
-
-二维码有效期：约 5 分钟
-也可以直接在浏览器打开：https://...
-
+...
 ✓ 应用创建成功
-  App ID:  cli_xxxxxxxxxxxxxxxx
-  Creator: ou_xxx (应用 owner，自动豁免访问控制)
 
 ═══════════════════════════════════════════════════
   🤖 机器人已上线！在飞书里发消息即可。
+     私聊直接发，群聊需 @机器人
+     发 /help 看可用命令
 ═══════════════════════════════════════════════════
 ```
 
-在飞书里搜到机器人，私聊或群聊 @它即可。回复用流式卡片实时显示 Copilot 的输出过程。
+在飞书里搜索机器人名称，私聊或群聊 `@` 它即可。
 
-## 架构（对照原项目）
+## 飞书里怎么用
+
+| 场景 | 用法 |
+|------|------|
+| 私聊 | 直接发消息 |
+| 群聊 | 需要 @ 机器人 |
+| 中断任务 | 点卡片底部 **⏹ 终止**，或发 `/stop` |
+| 新话题 | `/new` |
+
+回复以流式卡片挂在你的消息下方，Copilot 输出过程实时更新。
+
+## 命令
+
+| 命令 | 说明 |
+|------|------|
+| `/new` `/reset` | 清空当前会话 |
+| `/stop` | 中断正在运行的任务 |
+| `/status` | 查看 cwd、超时、运行状态 |
+| `/help` | 命令帮助 |
+| `/timeout [分钟\|off]` | 设置当前会话超时 |
+| `/cd <path>` | 切换工作目录（owner，重置会话） |
+| `/ws list\|save\|use\|remove` | 工作目录别名（owner） |
+| `/invite group` | 把当前群加入响应白名单（owner） |
+| `/invite admin <open_id>` | 添加管理员（owner） |
+| `/remove group\|admin ...` | 移出白名单 / 管理员（owner） |
+
+## 配置
+
+### 数据目录
+
+所有持久化数据在：
 
 ```
-飞书用户 ←(WebSocket)→ 飞书平台 ←(createLarkChannel)→ 本桥接 ←(spawn)→ copilot CLI
+~/.lark-copilot-bridge/
+├── config.json    # 飞书凭证、群白名单、工作目录别名等
+└── .env           # 可选环境变量（推荐放这里）
 ```
 
-| 组件 | 原项目 | 本项目 |
-|------|--------|--------|
-| 飞书 SDK | `@larksuite/channel` | `@larksuite/channel`（同款） |
-| 扫码建应用 | `registerApp()` + `qrcode-terminal` | 同款 |
-| WS 连接 | `createLarkChannel()` | 同款 |
-| 流式卡片 | `channel.stream({card:{initial,producer}})` + RunState reducer | 同款（简化状态：thinking→streaming→final） |
-| 代理适配 | ClaudeAdapter（`--output-format stream-json`） | CopilotAdapter（stdout 流式 onChunk） |
-| 会话连续 | `claude --resume <sessionId>` | 自维护历史拼 prompt（copilot 无 --resume） |
+首次扫码后**不必**手动填 App ID / Secret。
 
-## 前置条件
+### 环境变量
 
-1. **Node.js >= 20.12.0**
-2. **GitHub Copilot CLI**（需 Copilot 订阅）：
-   ```bash
-   curl -fsSL https://gh.io/copilot-install | bash
-   copilot   # 首次运行 /login 登录 GitHub
-   ```
-
-> 不需要 lark-cli，也不需要手动在飞书开放平台建应用。`@larksuite/channel` 的 `registerApp()` 会通过扫码自动创建。
-
-## 安装
+复制示例到数据目录（可选）：
 
 ```bash
-cd lark-copilot-bridge
-npm install
-cp .env.example .env   # 可选：设置 COPILOT_CWD 等
+mkdir -p ~/.lark-copilot-bridge
+cp .env.example ~/.lark-copilot-bridge/.env
 ```
 
-## 运行
+| 变量 | 说明 | 默认 |
+|------|------|------|
+| `COPILOT_CWD` | Copilot 工作目录 | 启动时当前目录 |
+| `COPILOT_EXTRA_ARGS` | 追加 copilot 参数 | 无 |
+| `COPILOT_TIMEOUT` | 超时（毫秒） | `300000` |
+| `LARK_ALLOWED_USERS` | 用户 open_id 白名单，逗号分隔 | 空 = 不限制 |
+| `LOG_LEVEL` | 日志级别 | `info` |
 
-```bash
-npm start
-```
+也可在聊天里用 `/cd`、`/timeout` 调整，无需改文件。
 
-首次运行终端扫码绑定飞书应用，凭证存到 `~/.lark-copilot-bridge/config.json`，下次免扫码。机器人上线后在飞书里发消息：
+## 常见问题
 
-- **私聊**：直接发消息
-- **群聊**：需要 @ 机器人
-- **命令**：`/new`（清会话）`/stop`（中断）`/status`（状态）`/help`（帮助）
+**群聊发了消息没反应**  
+群聊必须 @ 机器人。若启用了群白名单，owner 需在本群发 `/invite group`。
 
-## 工作原理
+**提示 copilot 未安装**  
+本机执行 `copilot --version` 检查；未登录则运行 `copilot` 完成 GitHub 登录。
 
-| 步骤 | 实现 | 对照原项目 |
-|------|------|-----------|
-| 扫码建应用 | `registerApp({ onQRCodeReady })` 终端二维码 | wizard.ts `runRegistrationWizard` |
-| 凭证持久化 | `~/.lark-copilot-bridge/config.json` (mode 0600) | ~/.lark-channel/config.json |
-| WS 连接 | `createLarkChannel({ appId, appSecret, ... })` | channel.ts |
-| 收消息 | `channel.on({ message })` → NormalizedMessage | 同款 |
-| 流式回复 | `channel.stream({card:{initial,producer}})` + `ctrl.update()` | 同款 |
-| copilot 调用 | `spawn copilot -p "..." -s --no-ask-user`，stdout onChunk | ClaudeAdapter（stream-json） |
-| 会话管理 | `Map<scope, History[]>` 拼 prompt | SessionStore + `--resume` |
-| 队列 | MessageQueue，同 scope 串行 | PendingQueue + block/unblock |
+**换电脑 / 重装**  
+复制 `~/.lark-copilot-bridge/config.json` 到新机器，安装 CLI 后直接 `lark-copilot-bridge` 即可，无需重新扫码（除非要换应用）。
 
-## 项目结构
-
-```
-bin/lark-copilot-bridge.ts   # CLI 入口
-src/
-  index.ts                   # 主入口：检测+扫码+通道+消息流
-  config.ts                  # 凭证持久化 + copilot 配置
-  logger.ts
-  session.ts                 # 会话管理（自维护历史）
-  queue.ts                   # 消息队列（同 scope 串行）
-  commands.ts                # 斜杠命令
-  lark/
-    client.ts                # @larksuite/channel 封装：registerApp+createLarkChannel+stream
-    card.ts                  # 飞书卡片（thinking/streaming/final/error）
-  copilot/
-    adapter.ts               # copilot CLI 子进程 + 流式 onChunk
-LEARNINGS.md                 # 原项目源码逐模块分析
-```
+**开发调试**  
+Clone 仓库后 `npm install && npm run dev`，等价于跑源码入口。
 
 ## 开发
 
 ```bash
-npm run typecheck   # 类型检查
-npm run build       # 构建
-npm run dev         # tsx 直接跑源码
+git clone https://github.com/ma345564280/lark-copilot-bridge.git
+cd lark-copilot-bridge
+npm install
+npm run dev          # 源码热跑
+npm run typecheck    # 类型检查
+npm run build        # 构建 dist/
+```
+
+发布 npm 包：
+
+```bash
+npm login
+npm publish
 ```
 
 ## 许可证

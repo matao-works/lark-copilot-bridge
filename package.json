@@ -1,17 +1,40 @@
 {
   "name": "lark-copilot-bridge",
-  "version": "0.1.0",
-  "description": "把飞书消息桥接到本地 GitHub Copilot CLI 的轻量机器人",
+  "version": "0.1.1",
+  "description": "在飞书里和本地 GitHub Copilot CLI 对话",
   "type": "module",
   "bin": {
     "lark-copilot-bridge": "dist/lark-copilot-bridge.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsup",
-    "start": "tsup && node dist/lark-copilot-bridge.js",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm run build",
+    "start": "node dist/lark-copilot-bridge.js",
     "dev": "node --import tsx bin/lark-copilot-bridge.ts",
     "typecheck": "tsc --noEmit"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ma345564280/lark-copilot-bridge.git"
+  },
+  "homepage": "https://github.com/ma345564280/lark-copilot-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/ma345564280/lark-copilot-bridge/issues"
+  },
+  "keywords": [
+    "feishu",
+    "lark",
+    "copilot",
+    "github-copilot",
+    "bridge",
+    "chatbot"
+  ],
   "engines": {
     "node": ">=20.12.0"
   },
