@@ -4,22 +4,20 @@
  * 对照原项目 ~/.lark-channel/config.json 的 profile 体系，简化为单文件：
  *   ~/.lark-copilot-bridge/config.json
  * 存扫码拿到的 appId/appSecret/tenant，下次启动免扫码。
+ *
+ * ACL 变更同时改内存 BridgeConfig + 磁盘，避免「提示成功但当场不生效」。
  */
 import 'dotenv/config';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { log } from './logger.js';
+import type { AppCredentials } from './types.js';
+
+export type { AppCredentials } from './types.js';
 
 const CONFIG_DIR = resolve(homedir(), '.lark-copilot-bridge');
 const CONFIG_FILE = resolve(CONFIG_DIR, 'config.json');
-
-export interface AppCredentials {
-  appId: string;
-  appSecret: string;
-  tenant: 'feishu' | 'lark';
-  creatorOpenId?: string;
-}
 
 export interface BridgeConfig {
   credentials: AppCredentials;
@@ -46,11 +44,39 @@ interface PersistedConfig {
   workspaces?: Record<string, string>;
 }
 
+/** 上次读盘是否成功；失败后禁止覆盖写入，避免抹掉凭证 */
+let persistReadable = true;
+
+function readPersisted(): PersistedConfig {
+  if (!existsSync(CONFIG_FILE)) {
+    persistReadable = true;
+    return {} as PersistedConfig;
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(CONFIG_FILE, 'utf8')) as PersistedConfig;
+    persistReadable = true;
+    return parsed;
+  } catch (err) {
+    persistReadable = false;
+    log.error('config.json 损坏，拒绝后续覆盖写入: %s', (err as Error).message);
+    return {} as PersistedConfig;
+  }
+}
+
+function writePersisted(data: PersistedConfig, opts?: { allowCorruptOverwrite?: boolean }): void {
+  if (!persistReadable && existsSync(CONFIG_FILE) && !opts?.allowCorruptOverwrite) {
+    throw new Error(`config.json 已损坏，拒绝覆盖写入。请手动修复 ${CONFIG_FILE}`);
+  }
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
+  persistReadable = true;
+}
+
 /** 从本地文件加载已保存的飞书凭证 */
 export function loadCredentials(): AppCredentials | null {
   if (!existsSync(CONFIG_FILE)) return null;
   try {
-    const parsed: PersistedConfig = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+    const parsed = readPersisted();
     if (!parsed.appId || !parsed.appSecret) return null;
     return {
       appId: parsed.appId,
@@ -66,28 +92,22 @@ export function loadCredentials(): AppCredentials | null {
 
 /** 保存飞书凭证到本地文件 */
 export function saveCredentials(creds: AppCredentials): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  const existing = existsSync(CONFIG_FILE)
-    ? (() => { try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; } })()
-    : {};
-  const merged: PersistedConfig = { ...existing, ...creds };
-  writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), { mode: 0o600 });
+  const existing = readPersisted();
+  // 扫码写入允许覆盖损坏文件（否则永远无法恢复）
+  writePersisted({ ...existing, ...creds }, { allowCorruptOverwrite: true });
   log.info('凭证已保存到 %s', CONFIG_FILE);
 }
 
 /** 加载完整配置（凭证 + copilot 选项） */
 export function loadConfig(credentials: AppCredentials): BridgeConfig {
-  // 优先从环境变量读 copilot 配置，其次从持久化文件
-  const persisted: Partial<PersistedConfig> = existsSync(CONFIG_FILE)
-    ? (() => { try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; } })()
-    : {};
+  const persisted = readPersisted();
 
   const allowedUsers = (process.env.LARK_ALLOWED_USERS || '')
     .split(',').map((s) => s.trim()).filter(Boolean);
-  const allowedChats = (persisted.allowedChats ?? []);
-  const admins = (persisted.admins ?? []);
+  const allowedChats = [...(persisted.allowedChats ?? [])];
+  const admins = [...(persisted.admins ?? [])];
 
-  const copilotCwd = validateCwd(process.env.COPILOT_CWD || persisted.copilotCwd || process.cwd());
+  const copilotCwd = validateWorkspaceDir(process.env.COPILOT_CWD || persisted.copilotCwd || process.cwd());
 
   const config: BridgeConfig = {
     credentials,
@@ -109,10 +129,6 @@ function parseArgs(s: string | undefined): string[] {
   return s.trim().split(/\s+/).filter(Boolean);
 }
 
-function validateCwd(cwd: string): string {
-  return validateWorkspaceDir(cwd);
-}
-
 /** 校验工作目录是否安全可用（/cd 命令用），支持 ~ 展开 */
 export function validateWorkspaceDir(cwd: string): string {
   const abs = resolve(cwd.replace(/^~(?=$|\/|\\)/, homedir()));
@@ -128,14 +144,13 @@ export function validateWorkspaceDir(cwd: string): string {
 export function saveCopilotConfig(patch: Partial<Pick<BridgeConfig, 'copilotCwd' | 'copilotExtraArgs' | 'copilotTimeout'>>): void {
   if (!existsSync(CONFIG_FILE)) return;
   try {
-    const existing = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
-    const merged = {
+    const existing = readPersisted();
+    writePersisted({
       ...existing,
-      ...(patch.copilotCwd ? { copilotCwd: patch.copilotCwd } : {}),
-      ...(patch.copilotExtraArgs ? { copilotExtraArgs: patch.copilotExtraArgs } : {}),
-      ...(patch.copilotTimeout ? { copilotTimeout: patch.copilotTimeout } : {}),
-    };
-    writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), { mode: 0o600 });
+      ...(patch.copilotCwd !== undefined ? { copilotCwd: patch.copilotCwd } : {}),
+      ...(patch.copilotExtraArgs !== undefined ? { copilotExtraArgs: patch.copilotExtraArgs } : {}),
+      ...(patch.copilotTimeout !== undefined ? { copilotTimeout: patch.copilotTimeout } : {}),
+    });
   } catch (err) {
     log.warn('保存 copilot 配置失败: %s', (err as Error).message);
   }
@@ -143,81 +158,77 @@ export function saveCopilotConfig(patch: Partial<Pick<BridgeConfig, 'copilotCwd'
 
 /** 列出所有命名工作目录别名 */
 export function listWorkspaces(): Record<string, string> {
-  if (!existsSync(CONFIG_FILE)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
-    return parsed.workspaces ?? {};
-  } catch { return {}; }
+  return readPersisted().workspaces ?? {};
 }
 
 /** 保存/更新一个命名工作目录别名 */
 export function saveWorkspace(name: string, path: string): void {
-  const existing = existsSync(CONFIG_FILE)
-    ? (() => { try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; } })()
-    : {};
+  const existing = readPersisted();
   const workspaces = { ...(existing.workspaces ?? {}), [name]: path };
-  writeFileSync(CONFIG_FILE, JSON.stringify({ ...existing, workspaces }, null, 2), { mode: 0o600 });
+  writePersisted({ ...existing, workspaces });
 }
 
 /** 删除一个命名工作目录别名 */
 export function removeWorkspace(name: string): boolean {
-  if (!existsSync(CONFIG_FILE)) return false;
-  try {
-    const existing = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
-    const workspaces = existing.workspaces ?? {};
-    if (!(name in workspaces)) return false;
-    delete workspaces[name];
-    writeFileSync(CONFIG_FILE, JSON.stringify({ ...existing, workspaces }, null, 2), { mode: 0o600 });
-    return true;
-  } catch { return false; }
-}
-
-/** 把一个群加入白名单（/invite group 用） */
-export function addAllowedChat(chatId: string): boolean {
-  const existing = existsSync(CONFIG_FILE)
-    ? (() => { try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; } })()
-    : {};
-  const chats: string[] = existing.allowedChats ?? [];
-  if (chats.includes(chatId)) return false;
-  chats.push(chatId);
-  writeFileSync(CONFIG_FILE, JSON.stringify({ ...existing, allowedChats: chats }, null, 2), { mode: 0o600 });
+  const existing = readPersisted();
+  const workspaces = { ...(existing.workspaces ?? {}) };
+  if (!(name in workspaces)) return false;
+  delete workspaces[name];
+  writePersisted({ ...existing, workspaces });
   return true;
 }
 
-/** 把一个群移出白名单（/remove group 用） */
-export function removeAllowedChat(chatId: string): boolean {
-  if (!existsSync(CONFIG_FILE)) return false;
+/** 群白名单：同步更新内存 config + 磁盘 */
+export function addAllowedChat(config: BridgeConfig, chatId: string): boolean {
+  if (config.allowedChats.includes(chatId)) return false;
+  config.allowedChats.push(chatId);
   try {
-    const existing = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
-    const chats: string[] = existing.allowedChats ?? [];
-    if (!chats.includes(chatId)) return false;
-    existing.allowedChats = chats.filter((c: string) => c !== chatId);
-    writeFileSync(CONFIG_FILE, JSON.stringify(existing, null, 2), { mode: 0o600 });
-    return true;
-  } catch { return false; }
-}
-
-/** 添加管理员（/invite admin 用） */
-export function addAdmin(openId: string): boolean {
-  const existing = existsSync(CONFIG_FILE)
-    ? (() => { try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; } })()
-    : {};
-  const admins: string[] = existing.admins ?? [];
-  if (admins.includes(openId)) return false;
-  admins.push(openId);
-  writeFileSync(CONFIG_FILE, JSON.stringify({ ...existing, admins }, null, 2), { mode: 0o600 });
+    const existing = readPersisted();
+    writePersisted({ ...existing, allowedChats: [...config.allowedChats] });
+  } catch (err) {
+    config.allowedChats = config.allowedChats.filter((c) => c !== chatId);
+    throw err;
+  }
   return true;
 }
 
-/** 移除管理员（/remove admin 用） */
-export function removeAdmin(openId: string): boolean {
-  if (!existsSync(CONFIG_FILE)) return false;
+export function removeAllowedChat(config: BridgeConfig, chatId: string): boolean {
+  if (!config.allowedChats.includes(chatId)) return false;
+  const prev = config.allowedChats;
+  config.allowedChats = config.allowedChats.filter((c) => c !== chatId);
   try {
-    const existing = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
-    const admins: string[] = existing.admins ?? [];
-    if (!admins.includes(openId)) return false;
-    existing.admins = admins.filter((a: string) => a !== openId);
-    writeFileSync(CONFIG_FILE, JSON.stringify(existing, null, 2), { mode: 0o600 });
-    return true;
-  } catch { return false; }
+    const existing = readPersisted();
+    writePersisted({ ...existing, allowedChats: [...config.allowedChats] });
+  } catch (err) {
+    config.allowedChats = prev;
+    throw err;
+  }
+  return true;
+}
+
+export function addAdmin(config: BridgeConfig, openId: string): boolean {
+  if (config.admins.includes(openId)) return false;
+  config.admins.push(openId);
+  try {
+    const existing = readPersisted();
+    writePersisted({ ...existing, admins: [...config.admins] });
+  } catch (err) {
+    config.admins = config.admins.filter((a) => a !== openId);
+    throw err;
+  }
+  return true;
+}
+
+export function removeAdmin(config: BridgeConfig, openId: string): boolean {
+  if (!config.admins.includes(openId)) return false;
+  const prev = config.admins;
+  config.admins = config.admins.filter((a) => a !== openId);
+  try {
+    const existing = readPersisted();
+    writePersisted({ ...existing, admins: [...config.admins] });
+  } catch (err) {
+    config.admins = prev;
+    throw err;
+  }
+  return true;
 }

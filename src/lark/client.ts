@@ -17,18 +17,14 @@ import {
   type LarkChannel,
   type NormalizedMessage,
   type CardStreamController,
+  type CardActionEvent,
   type CommentEvent,
 } from '@larksuite/channel';
 import qrcode from 'qrcode-terminal';
 import { log } from '../logger.js';
+import type { AppCredentials, SendOpts } from '../types.js';
 
-/** 扫码创建应用返回的凭证 */
-export interface AppCredentials {
-  appId: string;
-  appSecret: string;
-  tenant: 'feishu' | 'lark';
-  creatorOpenId?: string;
-}
+export type { AppCredentials, SendOpts } from '../types.js';
 
 /**
  * 扫码创建飞书应用（首次启动用）。
@@ -106,11 +102,11 @@ export class LarkBridge {
 
   /**
    * 连接并注册消息处理器 + 卡片按钮回调。
-   * onCardAction: 用户点卡片按钮时触发（如"停止"按钮），evt.value 里带 cmd 和 scope。
+   * onCardAction: 用户点卡片按钮时触发（如"停止"按钮），evt.action.value 里带 cmd 和 scope。
    */
   connect(
     onMessage: MessageHandler,
-    onCardAction?: (evt: { value?: any; chatId?: string; senderId?: string }) => void | Promise<void>,
+    onCardAction?: (evt: CardActionEvent) => void | Promise<void>,
     onComment?: (evt: CommentEvent) => void | Promise<void>,
   ): Promise<void> {
     let consecutiveReconnects = 0;
@@ -119,11 +115,11 @@ export class LarkBridge {
         if (msg.senderIsBot) return;
         await onMessage(msg);
       },
-      cardAction: async (evt: any) => {
+      cardAction: async (evt: CardActionEvent) => {
         try { await onCardAction?.(evt); }
         catch (err) { log.error('cardAction 处理失败: %s', (err as Error).message); }
       },
-      comment: async (evt: any) => {
+      comment: async (evt: CommentEvent) => {
         try { await onComment?.(evt); }
         catch (err) { log.error('comment 处理失败: %s', (err as Error).message); }
       },
@@ -144,19 +140,22 @@ export class LarkBridge {
 
   /** 连接状态（keepalive 用） */
   getConnectionStatus(): { state: string } | undefined {
-    return (this.channel as any).getConnectionStatus?.();
+    return (this.channel as { getConnectionStatus?: () => { state: string } }).getConnectionStatus?.();
   }
 
   /** 机器人身份（openId + name） */
   get botIdentity(): { openId: string; name?: string } | undefined {
-    const id = (this.channel as any).botIdentity;
+    const id = (this.channel as { botIdentity?: { openId: string; name?: string } }).botIdentity;
     return id ? { openId: id.openId, name: id.name } : undefined;
   }
 
+  /** 发送选项（对照原项目 commandReplyOptions / sendOpts） */
+  // keep type export near top after imports — actually add before class
+
   /** 发送纯文本消息 */
-  async sendText(chatId: string, text: string): Promise<string> {
-    const result = await this.channel.send(chatId, { text });
-    return (result as any).messageId;
+  async sendText(chatId: string, text: string, opts?: SendOpts): Promise<string> {
+    const result = await this.channel.send(chatId, { text }, opts);
+    return (result as { messageId: string }).messageId;
   }
 
   /** 拉取被引用消息的文本内容（引用回复用） */
@@ -217,30 +216,61 @@ export class LarkBridge {
   }
 
   /** 发送一张静态卡片（帮助/状态等） */
-  async sendCard(chatId: string, card: object): Promise<string> {
-    const result = await this.channel.send(chatId, { card });
-    return (result as any).messageId;
+  async sendCard(chatId: string, card: object, opts?: SendOpts): Promise<string> {
+    const result = await this.channel.send(chatId, { card }, opts);
+    return (result as { messageId: string }).messageId;
+  }
+
+  /** keepalive 用：断开并重连 WS */
+  async reconnect(): Promise<void> {
+    const ch = this.channel as unknown as {
+      forceReconnect?: () => Promise<void>;
+      disconnect?: () => Promise<void>;
+      connect: () => Promise<void>;
+    };
+    if (typeof ch.forceReconnect === 'function') {
+      await ch.forceReconnect();
+      return;
+    }
+    try { await ch.disconnect?.(); } catch { /* ignore */ }
+    await ch.connect();
+  }
+
+  /** 撤回消息（空流式回复时用，对照原项目 recallIfEmptyStreamedReply） */
+  async recallMessage(messageId: string): Promise<void> {
+    await this.channel.recallMessage(messageId);
   }
 
   /**
    * 流式卡片回复：先发 initialCard，然后 producer 里用 ctrl.update 增量更新。
    * 对照原项目 channel.stream({ card: { initial, producer } })。
-   * producer 收到一个 update 函数，调它传新卡片即可 patch。
+   * 返回 stream 消息 id，供空回复撤回。
    */
   async streamCard(
     chatId: string,
     initialCard: object,
     producer: (update: (nextCard: object) => Promise<void>) => Promise<void>,
     opts?: { replyTo?: string; replyInThread?: boolean },
-  ): Promise<void> {
-    await this.channel.stream(chatId, {
+  ): Promise<string | undefined> {
+    const result = await this.channel.stream(chatId, {
       card: {
         initial: initialCard,
         producer: async (ctrl: CardStreamController) => {
-          await producer((next) => ctrl.update(next));
+          // SDK 内部把 Impl 传给 producer；兼容万一拿到的是只带 run() 的包装对象
+          const anyCtrl = ctrl as any;
+          const doUpdate = typeof anyCtrl.update === 'function'
+            ? (next: object) => anyCtrl.update(next)
+            : typeof anyCtrl.impl?.update === 'function'
+              ? (next: object) => anyCtrl.impl.update(next)
+              : null;
+          if (!doUpdate) {
+            throw new Error('CardStreamController.update 不可用');
+          }
+          await producer(doUpdate);
         },
       },
     } as any, opts as any);
+    return (result as any)?.messageId as string | undefined;
   }
 
   /** 断开连接 */

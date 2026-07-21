@@ -1,16 +1,8 @@
 /**
  * Copilot CLI 适配器（支持原生 --resume）
  *
- * 重大纠正：copilot CLI 确实有 resume 机制！
- *   - `--resume=<session-id>` 非交互式恢复指定会话（接受 ID/前缀/名称）
- *   - `--continue` 恢复当前 cwd 最近会话
- *   - `--session-id <uuid>` 精确指定
- *   - `-p` 退出时输出 `copilot --resume=SESSION-ID` 提示，可提取 session-id
- *
- * 所以我们不再自维护历史拼 prompt，而是用 copilot 原生 resume（和原项目 claude --resume 对齐）。
- * 每次跑完从 stderr/stdout 提取 session-id 存回，下次用 --resume 恢复。
- *
- * 流式：stdout 边输出边 onChunk 更新卡片（copilot 输出纯文本流，非 stream-json）。
+ * 调用：copilot -p ... -s --no-ask-user [--resume=id]
+ * 流式：stdout onChunk；退出摘要提取 session-id。
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { log } from '../logger.js';
@@ -20,12 +12,11 @@ const SESSION_ID_RE = /--resume=([a-zA-Z0-9-]+)/;
 export interface CopilotRunOptions {
   cwd: string;
   prompt: string;
+  /** 0 = 不设超时 */
   timeoutMs: number;
   extraArgs: string[];
   abortSignal?: AbortSignal;
-  /** 恢复指定会话（copilot --resume=<id>） */
   sessionId?: string;
-  /** stdout 每收到一段文本就回调（流式更新卡片） */
   onChunk?: (chunk: string) => void;
 }
 
@@ -35,7 +26,6 @@ export interface CopilotRunResult {
   stderr: string;
   aborted: boolean;
   timedOut: boolean;
-  /** 本次运行的 session-id（用于下次 resume），提取自退出摘要 */
   sessionId?: string;
 }
 
@@ -60,21 +50,37 @@ export function runCopilot(opts: CopilotRunOptions): Promise<CopilotRunResult> {
     let aborted = false;
     let settled = false;
     let chunkBuffer = '';
+    let chunkTimer: NodeJS.Timeout | null = null;
+    let wallTimer: NodeJS.Timeout | null = null;
+    let killTimer: NodeJS.Timeout | null = null;
     let sessionId: string | undefined;
+    let onAbort: (() => void) | undefined;
 
     const tryExtractSessionId = (text: string): void => {
       if (sessionId) return;
       const m = text.match(SESSION_ID_RE);
-      if (m) {
-        sessionId = m[1];
-        log.debug('提取到 session-id: %s', sessionId);
+      if (m) sessionId = m[1];
+    };
+
+    const flushChunk = (): void => {
+      if (chunkTimer) {
+        clearTimeout(chunkTimer);
+        chunkTimer = null;
       }
+      if (!opts.onChunk || !chunkBuffer) return;
+      opts.onChunk(stripAnsi(chunkBuffer));
+      chunkBuffer = '';
     };
 
     const finish = (result: Partial<CopilotRunResult>) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      if (wallTimer) clearTimeout(wallTimer);
+      if (killTimer) clearTimeout(killTimer);
+      flushChunk();
+      if (onAbort && opts.abortSignal) {
+        opts.abortSignal.removeEventListener('abort', onAbort);
+      }
       resolve({
         exitCode: result.exitCode ?? -1,
         stdout: stripAnsi(stdout),
@@ -91,9 +97,10 @@ export function runCopilot(opts: CopilotRunOptions): Promise<CopilotRunResult> {
       tryExtractSessionId(text);
       if (opts.onChunk) {
         chunkBuffer += text;
-        if (chunkBuffer.length >= 200) {
-          opts.onChunk(stripAnsi(chunkBuffer));
-          chunkBuffer = '';
+        if (chunkBuffer.length >= 40) {
+          flushChunk();
+        } else if (!chunkTimer) {
+          chunkTimer = setTimeout(flushChunk, 120);
         }
       }
     });
@@ -110,33 +117,33 @@ export function runCopilot(opts: CopilotRunOptions): Promise<CopilotRunResult> {
     });
 
     child.on('close', (code) => {
-      if (opts.onChunk && chunkBuffer) {
-        opts.onChunk(stripAnsi(chunkBuffer));
-        chunkBuffer = '';
-      }
       log.debug('copilot 退出: code=%s session=%s', code, sessionId ?? '(未提取到)');
       finish({ exitCode: code ?? -1 });
     });
 
-    let timer: NodeJS.Timeout | null = null;
+    const setKillTimer = (t: NodeJS.Timeout): void => {
+      if (killTimer) clearTimeout(killTimer);
+      killTimer = t;
+    };
+
     if (opts.timeoutMs > 0) {
-      timer = setTimeout(() => {
+      wallTimer = setTimeout(() => {
         timedOut = true;
         log.warn('copilot 超时(%dms)，终止', opts.timeoutMs);
-        killGracefully(child);
+        killGracefully(child, setKillTimer);
       }, opts.timeoutMs);
     }
 
     if (opts.abortSignal) {
       if (opts.abortSignal.aborted) {
         aborted = true;
-        killGracefully(child);
+        killGracefully(child, setKillTimer);
       } else {
-        const onAbort = () => {
+        onAbort = () => {
           if (opts.abortSignal?.aborted && !settled) {
             aborted = true;
             log.info('中断 copilot 进程');
-            killGracefully(child);
+            killGracefully(child, setKillTimer);
           }
         };
         opts.abortSignal.addEventListener('abort', onAbort);
@@ -145,9 +152,11 @@ export function runCopilot(opts: CopilotRunOptions): Promise<CopilotRunResult> {
   });
 }
 
-function killGracefully(child: ChildProcess): void {
+function killGracefully(child: ChildProcess, track: (t: NodeJS.Timeout) => void): void {
   try { child.kill('SIGTERM'); } catch { /* ignore */ }
-  setTimeout(() => { try { if (!child.killed) child.kill('SIGKILL'); } catch { /* ignore */ } }, 3000);
+  track(setTimeout(() => {
+    try { if (!child.killed) child.kill('SIGKILL'); } catch { /* ignore */ }
+  }, 3000));
 }
 
 function stripAnsi(s: string): string {
@@ -157,8 +166,17 @@ function stripAnsi(s: string): string {
 export async function checkCopilotInstalled(): Promise<boolean> {
   return new Promise((resolve) => {
     const child = spawn('copilot', ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
-    child.on('error', () => resolve(false));
-    child.on('close', (code) => resolve(code === 0));
-    setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } resolve(false); }, 5000);
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      resolve(ok);
+    };
+    child.on('error', () => finish(false));
+    child.on('close', (code) => finish(code === 0));
+    setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      finish(false);
+    }, 5000);
   });
 }

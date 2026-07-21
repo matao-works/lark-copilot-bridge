@@ -1,9 +1,11 @@
 /**
- * 斜杠命令系统（对照原项目 src/commands/index.ts 补齐）
+ * 斜杠命令系统（对照原项目 src/commands/index.ts）
  *
- * 命令回执规则（对照原项目）：简单命令用纯文本，/help /status /ws list 用交互卡片。
- * /stop 行为：有 run 在跑时不回复文字（卡片自动渲染"已中断"），无 run 时简短提示。
+ * - 普通命令：谁能聊天谁就能用（/new /help /status /stop /timeout）
+ * - 特权命令：仅 owner/admin（/invite /remove /cd /ws）——个人自用不挡扫码本人
+ * - 回执一律 replyTo 用户消息
  */
+import type { IncomingMessage } from './lark/client.js';
 import type { LarkBridge } from './lark/client.js';
 import type { SessionStore } from './session.js';
 import type { MessageQueue } from './queue.js';
@@ -17,17 +19,22 @@ import {
   removeAllowedChat,
   addAdmin,
   removeAdmin,
+  saveCopilotConfig,
 } from './config.js';
 import { infoCard } from './lark/card.js';
+import { isPrivileged } from './acl.js';
 import { log } from './logger.js';
 
 export interface CommandContext {
   lark: LarkBridge;
   session: SessionStore;
-  queue: MessageQueue<any>;
+  queue: MessageQueue<IncomingMessage>;
   config: BridgeConfig;
   chatId: string;
   scope: string;
+  messageId: string;
+  threadId?: string;
+  senderId: string;
   ownerOpenId?: string;
 }
 
@@ -35,25 +42,50 @@ export interface CommandResult {
   handled: boolean;
 }
 
+type ReplyOpts = { replyTo: string; replyInThread?: true };
+
+function replyOpts(ctx: CommandContext): ReplyOpts {
+  return {
+    replyTo: ctx.messageId,
+    ...(ctx.threadId ? { replyInThread: true as const } : {}),
+  };
+}
+
+async function replyText(ctx: CommandContext, text: string): Promise<void> {
+  try {
+    await ctx.lark.sendText(ctx.chatId, text, replyOpts(ctx));
+  } catch (err) {
+    log.error('命令回复失败: %s', (err as Error).message);
+  }
+}
+
+async function replyCard(ctx: CommandContext, card: object): Promise<void> {
+  try {
+    await ctx.lark.sendCard(ctx.chatId, card, replyOpts(ctx));
+  } catch (err) {
+    log.error('命令卡片失败: %s', (err as Error).message);
+  }
+}
+
+async function requirePrivilege(ctx: CommandContext): Promise<boolean> {
+  if (isPrivileged(ctx.senderId, ctx.config, ctx.ownerOpenId)) return true;
+  await replyText(ctx, '⚠️ 此命令仅 bot owner / 管理员可用。');
+  return false;
+}
+
 const HELP_BODY = `**命令列表**
 
 - \`/new\` \`/reset\` — 清空当前会话
-- \`/cd <path>\` — 切换工作目录（会重置会话，支持 ~ 展开）
-- \`/ws list\` — 列出命名工作目录
-- \`/ws save <name>\` — 保存当前工作目录为别名
-- \`/ws use <name>\` — 切换到命名工作目录
-- \`/ws remove <name>\` — 删除命名工作目录
+- \`/cd <path>\` — 切换工作目录（owner，会重置会话）
+- \`/ws list|save|use|remove\` — 工作目录别名（owner）
 - \`/status\` — 查看当前状态
-- \`/stop\` — 停止当前任务（也可点卡片 ⏹ 按钮）
-- \`/timeout [N|off]\` — 设置当前会话超时（分钟），off 关闭
-- \`/invite group\` — 把当前群加入响应白名单
-- \`/invite admin <open_id>\` — 添加管理员
-- \`/remove group\` — 把当前群移出响应白名单
-- \`/remove admin <open_id>\` — 移除管理员
+- \`/stop\` — 停止当前任务（也可点卡片 ⏹ 终止）
+- \`/timeout [N|off]\` — 设置当前会话超时（分钟）
+- \`/invite group|admin\` — 白名单 / 管理员（owner）
+- \`/remove group|admin\` — 移出白名单 / 管理员（owner）
 - \`/help\` — 本帮助
 
-其他内容直接发给 Copilot。
-私聊无需 @，群聊需 @机器人。`;
+其他内容直接发给 Copilot。私聊无需 @，群聊需 @机器人。`;
 
 export async function handleCommand(text: string, ctx: CommandContext): Promise<CommandResult> {
   const trimmed = text.trim();
@@ -62,7 +94,7 @@ export async function handleCommand(text: string, ctx: CommandContext): Promise<
   const parts = trimmed.split(/\s+/);
   const cmd = parts[0] ?? '';
   const arg = parts.slice(1).join(' ');
-  log.info('命令: %s [scope=%s]', cmd, ctx.scope);
+  log.info('命令: %s [scope=%s sender=%s]', cmd, ctx.scope, ctx.senderId);
 
   switch (cmd) {
     case '/new':
@@ -70,46 +102,46 @@ export async function handleCommand(text: string, ctx: CommandContext): Promise<
       const wasRunning = ctx.session.isRunning(ctx.scope);
       if (wasRunning) ctx.session.abort(ctx.scope);
       ctx.session.clear(ctx.scope);
-      await ctx.lark.sendText(ctx.chatId, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+      await replyText(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
       return { handled: true };
     }
 
     case '/help': {
-      await ctx.lark.sendCard(ctx.chatId, infoCard('💡 使用帮助', HELP_BODY));
+      await replyCard(ctx, infoCard('💡 使用帮助', HELP_BODY));
       return { handled: true };
     }
 
     case '/stop': {
-      // 对照原项目：有 run 不回复（卡片自动渲染"已中断"），无 run 简短提示
-      const ok = ctx.session.abort(ctx.scope);
-      if (!ok) {
-        await ctx.lark.sendText(ctx.chatId, '当前没有正在运行的任务。');
-      }
+      ctx.session.abort(ctx.scope);
       return { handled: true };
     }
 
     case '/status': {
-      await ctx.lark.sendCard(ctx.chatId, statusCard(ctx));
+      await replyCard(ctx, statusCard(ctx));
       return { handled: true };
     }
 
     case '/cd': {
+      if (!(await requirePrivilege(ctx))) return { handled: true };
       if (!arg) {
-        await ctx.lark.sendText(ctx.chatId, '用法：`/cd <绝对路径>` 或 `/cd ~/projects/foo`');
+        await replyText(ctx, '用法：`/cd <绝对路径>` 或 `/cd ~/projects/foo`');
         return { handled: true };
       }
       try {
         const abs = validateWorkspaceDir(arg);
         if (ctx.session.isRunning(ctx.scope)) ctx.session.abort(ctx.scope);
         ctx.session.setCwd(ctx.scope, abs);
-        await ctx.lark.sendText(ctx.chatId, `✓ 已切换 cwd 到 \`${abs}\`\n（会话已重置）`);
+        // 落盘供下次启动默认；进程内不改全局 config，避免其它 chat 默认 cwd 被带走
+        saveCopilotConfig({ copilotCwd: abs });
+        await replyText(ctx, `✓ 已切换 cwd 到 \`${abs}\`\n（本会话已重置；下次启动默认也用此目录）`);
       } catch (err) {
-        await ctx.lark.sendText(ctx.chatId, `❌ ${(err as Error).message}`);
+        await replyText(ctx, `❌ ${(err as Error).message}`);
       }
       return { handled: true };
     }
 
     case '/ws': {
+      if (!(await requirePrivilege(ctx))) return { handled: true };
       return handleWs(arg, ctx);
     }
 
@@ -118,51 +150,59 @@ export async function handleCommand(text: string, ctx: CommandContext): Promise<
     }
 
     case '/invite': {
+      if (!(await requirePrivilege(ctx))) return { handled: true };
       const [sub, ...rest] = arg.trim().split(/\s+/);
       const target = rest.join(' ');
-      if (sub === 'group') {
-        const added = addAllowedChat(ctx.chatId);
-        await ctx.lark.sendText(ctx.chatId, added ? '✅ 已把当前群加入白名单。' : '当前群已在白名单中。');
-      } else if (sub === 'admin') {
-        if (!target) {
-          await ctx.lark.sendText(ctx.chatId, '用法：`/invite admin <open_id>`');
+      try {
+        if (sub === 'group') {
+          const added = addAllowedChat(ctx.config, ctx.chatId);
+          await replyText(ctx, added ? '✅ 已把当前群加入白名单（立即生效）。' : '当前群已在白名单中。');
+        } else if (sub === 'admin') {
+          if (!target) {
+            await replyText(ctx, '用法：`/invite admin <open_id>`');
+          } else {
+            const added = addAdmin(ctx.config, target);
+            await replyText(ctx, added ? `✅ 已添加管理员：${target}` : `${target} 已是管理员`);
+          }
         } else {
-          const added = addAdmin(target);
-          await ctx.lark.sendText(ctx.chatId, added ? `✅ 已添加管理员：${target}` : `${target} 已是管理员`);
+          await replyText(ctx, '用法：`/invite group` 或 `/invite admin <open_id>`');
         }
-      } else {
-        await ctx.lark.sendText(ctx.chatId, '用法：`/invite group` 或 `/invite admin <open_id>`');
+      } catch (err) {
+        await replyText(ctx, `❌ ${(err as Error).message}`);
       }
       return { handled: true };
     }
 
     case '/remove': {
+      if (!(await requirePrivilege(ctx))) return { handled: true };
       const [sub, ...rest] = arg.trim().split(/\s+/);
       const target = rest.join(' ');
-      if (sub === 'group') {
-        const removed = removeAllowedChat(ctx.chatId);
-        await ctx.lark.sendText(ctx.chatId, removed ? '✅ 已把当前群移出白名单。' : '当前群不在白名单中。');
-      } else if (sub === 'admin') {
-        if (!target) {
-          await ctx.lark.sendText(ctx.chatId, '用法：`/remove admin <open_id>`');
+      try {
+        if (sub === 'group') {
+          const removed = removeAllowedChat(ctx.config, ctx.chatId);
+          await replyText(ctx, removed ? '✅ 已把当前群移出白名单。' : '当前群不在白名单中。');
+        } else if (sub === 'admin') {
+          if (!target) {
+            await replyText(ctx, '用法：`/remove admin <open_id>`');
+          } else {
+            const removed = removeAdmin(ctx.config, target);
+            await replyText(ctx, removed ? `✅ 已移除管理员：${target}` : `${target} 不是管理员`);
+          }
         } else {
-          const removed = removeAdmin(target);
-          await ctx.lark.sendText(ctx.chatId, removed ? `✅ 已移除管理员：${target}` : `${target} 不是管理员`);
+          await replyText(ctx, '用法：`/remove group` 或 `/remove admin <open_id>`');
         }
-      } else {
-        await ctx.lark.sendText(ctx.chatId, '用法：`/remove group` 或 `/remove admin <open_id>`');
+      } catch (err) {
+        await replyText(ctx, `❌ ${(err as Error).message}`);
       }
       return { handled: true };
     }
 
-    default: {
-      // 对照原项目：未知命令不当错误，当普通消息走 agent
+    default:
       return { handled: false };
-    }
   }
 }
 
-function handleWs(arg: string, ctx: CommandContext): CommandResult | Promise<CommandResult> {
+async function handleWs(arg: string, ctx: CommandContext): Promise<CommandResult> {
   const [sub, ...rest] = arg.split(/\s+/);
   const name = rest.join(' ');
 
@@ -174,104 +214,102 @@ function handleWs(arg: string, ctx: CommandContext): CommandResult | Promise<Com
       const entries = Object.entries(workspaces);
       let body: string;
       if (entries.length === 0) {
-        body = `当前 cwd：\`${currentCwd}\`\n\n暂无命名工作目录。\n💡 发送 \`/ws save <name>\` 把当前 cwd 存为别名`;
+        body = `当前 cwd：\`${currentCwd}\`\n\n暂无命名工作目录。\n💡 \`/ws save <name>\` 保存别名`;
       } else {
         const lines = entries.map(
           ([n, p]) => `- **${n}** → \`${p}\`${p === currentCwd ? '  ← 当前' : ''}`,
         );
         body = `当前 cwd：\`${currentCwd}\`\n\n${lines.join('\n')}`;
       }
-      void ctx.lark.sendCard(ctx.chatId, infoCard('📂 工作目录', body));
-      return Promise.resolve({ handled: true });
+      await replyCard(ctx, infoCard('📂 工作目录', body));
+      return { handled: true };
     }
     case 'save': {
       if (!name) {
-        void ctx.lark.sendText(ctx.chatId, '用法：`/ws save <name>`');
-        return Promise.resolve({ handled: true });
+        await replyText(ctx, '用法：`/ws save <name>`');
+        return { handled: true };
       }
       const cwd = ctx.session.cwdFor(ctx.scope) ?? ctx.config.copilotCwd;
       saveWorkspace(name, cwd);
-      void ctx.lark.sendText(ctx.chatId, `✓ 工作目录别名已保存：\`${name}\` → ${cwd}`);
-      return Promise.resolve({ handled: true });
+      await replyText(ctx, `✓ 已保存：\`${name}\` → ${cwd}`);
+      return { handled: true };
     }
     case 'use': {
       if (!name) {
-        void ctx.lark.sendText(ctx.chatId, '用法：`/ws use <name>`');
-        return Promise.resolve({ handled: true });
+        await replyText(ctx, '用法：`/ws use <name>`');
+        return { handled: true };
       }
-      const workspaces = listWorkspaces();
-      if (!(name in workspaces)) {
-        void ctx.lark.sendText(ctx.chatId, `未找到工作目录别名：\`${name}\``);
-        return Promise.resolve({ handled: true });
+      const path = listWorkspaces()[name];
+      if (!path) {
+        await replyText(ctx, `❌ 未找到别名 \`${name}\``);
+        return { handled: true };
       }
-      if (ctx.session.isRunning(ctx.scope)) ctx.session.abort(ctx.scope);
-      ctx.session.setCwd(ctx.scope, workspaces[name]);
-      void ctx.lark.sendText(ctx.chatId, `✓ 已切换到 \`${name}\` (${workspaces[name]})\n（会话已重置）`);
-      return Promise.resolve({ handled: true });
+      try {
+        const abs = validateWorkspaceDir(path);
+        if (ctx.session.isRunning(ctx.scope)) ctx.session.abort(ctx.scope);
+        ctx.session.setCwd(ctx.scope, abs);
+        saveCopilotConfig({ copilotCwd: abs });
+        await replyText(ctx, `✓ 已切换到 \`${name}\` → ${abs}\n（本会话已重置；下次启动默认也用此目录）`);
+      } catch (err) {
+        await replyText(ctx, `❌ ${(err as Error).message}`);
+      }
+      return { handled: true };
     }
-    case 'remove':
-    case 'rm': {
+    case 'remove': {
       if (!name) {
-        void ctx.lark.sendText(ctx.chatId, '用法：`/ws remove <name>`');
-        return Promise.resolve({ handled: true });
+        await replyText(ctx, '用法：`/ws remove <name>`');
+        return { handled: true };
       }
       const ok = removeWorkspace(name);
-      void ctx.lark.sendText(ctx.chatId, ok ? `✓ 已删除工作目录别名：\`${name}\`` : `未找到工作目录别名：\`${name}\``);
-      return Promise.resolve({ handled: true });
+      await replyText(ctx, ok ? `✓ 已删除 \`${name}\`` : `❌ 未找到 \`${name}\``);
+      return { handled: true };
     }
     default: {
-      void ctx.lark.sendText(ctx.chatId, '用法：`/ws [list|save <name>|use <name>|remove <name>]`');
-      return Promise.resolve({ handled: true });
+      await replyText(ctx, '用法：`/ws list|save|use|remove`');
+      return { handled: true };
     }
   }
 }
 
-function handleTimeout(arg: string, ctx: CommandContext): CommandResult | Promise<CommandResult> {
-  const globalDefault = Math.round(ctx.config.copilotTimeout / 60_000);
-  const scopeOverride = ctx.session.idleTimeoutFor(ctx.scope);
-
-  if (!arg) {
-    const cur = scopeOverride !== undefined ? `${scopeOverride} 分钟` : `默认(${globalDefault} 分钟)`;
-    void ctx.lark.sendText(
-      ctx.chatId,
-      `⏱ 当前会话超时：${cur}\n全局默认：${globalDefault} 分钟\n\n用法：\n- \`/timeout 15\` 当前会话设 15 分钟\n- \`/timeout off\` 关闭当前会话超时`,
-    );
-    return Promise.resolve({ handled: true });
+async function handleTimeout(arg: string, ctx: CommandContext): Promise<CommandResult> {
+  const v = arg.trim().toLowerCase();
+  if (!v) {
+    const cur = ctx.session.idleTimeoutFor(ctx.scope);
+    const desc = cur === undefined ? '默认' : cur === 0 ? '关闭' : `${cur} 分钟`;
+    await replyText(ctx, `当前超时：${desc}\n用法：\`/timeout <分钟>\` 或 \`/timeout off\``);
+    return { handled: true };
   }
-
-  if (arg === 'off') {
+  if (v === 'off' || v === '0') {
     ctx.session.setIdleTimeout(ctx.scope, 0);
-    void ctx.lark.sendText(ctx.chatId, '✅ 已关闭当前会话的超时。');
-    return Promise.resolve({ handled: true });
+    await replyText(ctx, '✓ 已关闭超时');
+    return { handled: true };
   }
-
-  const n = Number(arg);
-  if (!Number.isFinite(n) || n < 1 || n > 120) {
-    void ctx.lark.sendText(ctx.chatId, '❌ 用法：`/timeout <1-120>` / `/timeout off`');
-    return Promise.resolve({ handled: true });
+  const n = Number(v);
+  const MAX_TIMEOUT_MIN = 24 * 60;
+  if (!Number.isFinite(n) || n < 0) {
+    await replyText(ctx, '用法：`/timeout <分钟>` 或 `/timeout off`');
+    return { handled: true };
+  }
+  if (n > MAX_TIMEOUT_MIN) {
+    await replyText(ctx, `❌ 超时上限 ${MAX_TIMEOUT_MIN} 分钟（24h）`);
+    return { handled: true };
   }
   ctx.session.setIdleTimeout(ctx.scope, n);
-  void ctx.lark.sendText(ctx.chatId, `✅ 当前会话超时已设为 ${n} 分钟。`);
-  return Promise.resolve({ handled: true });
+  await replyText(ctx, `✓ 超时已设为 ${n} 分钟`);
+  return { handled: true };
 }
 
 function statusCard(ctx: CommandContext): object {
-  const cwd = ctx.session.cwdFor(ctx.scope) ?? ctx.config.copilotCwd;
-  const historyLen = ctx.session.getHistory(ctx.scope).length;
   const running = ctx.session.isRunning(ctx.scope);
+  const cwd = ctx.session.cwdFor(ctx.scope) ?? ctx.config.copilotCwd;
   const pending = ctx.queue.pendingCount(ctx.scope);
-  const timeoutOverride = ctx.session.idleTimeoutFor(ctx.scope);
-  const timeout = timeoutOverride !== undefined
-    ? (timeoutOverride === 0 ? '关闭' : `${timeoutOverride} 分钟`)
-    : `${Math.round(ctx.config.copilotTimeout / 60_000)} 分钟(默认)`;
+  const timeout = ctx.session.idleTimeoutFor(ctx.scope);
+  const timeoutDesc = timeout === undefined ? '默认' : timeout === 0 ? '关闭' : `${timeout} 分钟`;
   const body = [
-    `🧭 **scope**: \`${ctx.scope}\``,
-    `📁 **cwd**: \`${cwd}\``,
-    `🔗 **会话轮数**: ${Math.floor(historyLen / 2)}/${ctx.config.maxHistoryRounds}`,
-    `⏱ **超时**: ${timeout}`,
-    `🏃 **当前状态**: ${running ? '处理中' : '空闲'}${pending > 0 ? ` (队列 ${pending})` : ''}`,
-    `🛡 **飞书应用**: ${ctx.config.credentials.appId}`,
-    `⚙️ **Copilot 参数**: ${ctx.config.copilotExtraArgs.length ? ctx.config.copilotExtraArgs.join(' ') : '无'}`,
+    `**状态**: ${running ? '处理中' : '空闲'}${pending > 0 ? `（队列 ${pending}）` : ''}`,
+    `**cwd**: \`${cwd}\``,
+    `**超时**: ${timeoutDesc}`,
+    `**scope**: \`${ctx.scope}\``,
   ].join('\n');
   return infoCard('📊 当前状态', body);
 }

@@ -82,6 +82,11 @@ export class SessionStore {
     this.abortControllers.set(scope, ac);
     return ac;
   }
+  /** 原子抢锁：已在跑则返回 null */
+  tryMarkRunning(scope: string): AbortController | null {
+    if (this.running.has(scope)) return null;
+    return this.markRunning(scope);
+  }
   markIdle(scope: string): void {
     this.running.delete(scope);
     this.abortControllers.delete(scope);

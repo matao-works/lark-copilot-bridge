@@ -1,91 +1,116 @@
 /**
- * 飞书卡片构建
+ * 飞书卡片（对齐原项目 src/card/run-renderer.ts）
  *
- * 对照原项目 src/card/run-renderer.ts：原项目用 RunState reducer 维护复杂状态机，
- * 流式卡片带"停止"按钮（点击触发 cardAction → ActiveRuns.interrupt）。
- * 我们简化：thinking/streaming 卡片带停止按钮，final/error 终态无按钮。
+ * UX 原则：
+ * - schema 2.0 + body.elements，无顶层 header（避免「✅ Copilot 回复」噪音）
+ * - 已用 replyTo 挂在用户消息下，卡片内不再重复引用用户原文
+ * - running：正文 + 底部状态 + 停止按钮；终态：只留正文/错误
  */
 
-/** 思考中卡片：copilot 刚启动时发（带停止按钮） */
-export function thinkingCard(userText: string, scope: string): object {
+export type RunPhase = 'thinking' | 'streaming' | 'done' | 'error' | 'interrupted';
+
+/** 思考中 / 流式中 / 终态 — 统一入口，对照 renderCard(state) */
+export function runCard(opts: {
+  scope: string;
+  phase: RunPhase;
+  /** 流式或最终正文 */
+  content?: string;
+  /** phase=error 时的错误信息 */
+  errorMsg?: string;
+}): object {
+  const elements: object[] = [];
+  const running = opts.phase === 'thinking' || opts.phase === 'streaming';
+
+  if (opts.phase === 'thinking') {
+    elements.push(noteMd('_正在思考…_'));
+  } else if (opts.phase === 'streaming') {
+    const body = (opts.content || '').trim();
+    elements.push(markdown(body || '_正在输出…_'));
+  } else if (opts.phase === 'interrupted') {
+    if (opts.content?.trim()) elements.push(markdown(opts.content));
+    elements.push(noteMd('_⏹ 已被中断_'));
+  } else if (opts.phase === 'error') {
+    elements.push(noteMd(`⚠️ ${opts.errorMsg || '处理失败'}`));
+  } else {
+    // done
+    const body = (opts.content || '').trim();
+    elements.push(markdown(body || '_（未返回内容）_'));
+  }
+
+  if (running) {
+    elements.push(footerStatus(opts.phase === 'thinking' ? 'thinking' : 'streaming'));
+    elements.push(stopButton(opts.scope));
+  }
+
   return {
-    config: { streaming_mode: true },
-    header: cardHeader('⏳ Copilot 正在思考'),
-    elements: [
-      quoteBlock(userText),
-      { tag: 'div', text: { tag: 'lark_md', content: '*处理中，请稍候…*' } },
-      stopButton(scope),
-    ],
+    schema: '2.0',
+    config: {
+      streaming_mode: running,
+      summary: { content: summaryText(opts.phase) },
+    },
+    body: { elements },
   };
 }
 
-/** 流式更新卡片：显示 copilot 已输出的部分文本（带停止按钮） */
-export function streamingCard(userText: string, partial: string, scope: string): object {
-  const body = partial || '*处理中，请稍候…*';
-  return {
-    config: { streaming_mode: true },
-    header: cardHeader('⏳ Copilot 正在思考'),
-    elements: [
-      quoteBlock(userText),
-      { tag: 'div', text: { tag: 'lark_md', content: body } },
-      stopButton(scope),
-    ],
-  };
+/** @deprecated 用 runCard；保留薄包装方便调用点迁移 */
+export function thinkingCard(_userText: string, scope: string): object {
+  return runCard({ scope, phase: 'thinking' });
 }
 
-/** 最终回复卡片（终态，无按钮） */
-export function finalCard(userText: string, reply: string): object {
-  return {
-    config: { streaming_mode: false },
-    header: cardHeader('✅ Copilot 回复'),
-    elements: [quoteBlock(userText), { tag: 'div', text: { tag: 'lark_md', content: reply } }],
-  };
+export function streamingCard(_userText: string, partial: string, scope: string): object {
+  return runCard({ scope, phase: 'streaming', content: partial });
 }
 
-/** 错误卡片（终态，无按钮） */
-export function errorCard(userText: string, errorMsg: string): object {
-  return {
-    config: { streaming_mode: false },
-    header: cardHeader('⚠️ 处理失败'),
-    elements: [
-      quoteBlock(userText),
-      { tag: 'div', text: { tag: 'lark_md', content: `\`\`\`\n${errorMsg}\n\`\`\`` } },
-    ],
-  };
+export function finalCard(_userText: string, reply: string): object {
+  return runCard({ scope: '', phase: 'done', content: reply });
 }
 
-/** 纯信息卡片（帮助/状态等） */
+export function errorCard(_userText: string, errorMsg: string): object {
+  return runCard({ scope: '', phase: 'error', errorMsg });
+}
+
+/** 纯信息卡片（帮助/状态等命令回执） */
 export function infoCard(title: string, body: string): object {
   return {
-    header: cardHeader(title),
-    elements: [{ tag: 'div', text: { tag: 'lark_md', content: body } }],
+    schema: '2.0',
+    config: {
+      streaming_mode: false,
+      summary: { content: title },
+    },
+    body: {
+      elements: [
+        markdown(`**${title}**`),
+        markdown(body),
+      ],
+    },
   };
 }
 
-/** 停止按钮：点击触发 cardAction，value 带 cmd=stop + scope */
 function stopButton(scope: string): object {
   return {
-    tag: 'action',
-    actions: [
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: '⏹ 停止' },
-        type: 'danger',
-        value: { cmd: 'stop', scope },
-      },
-    ],
+    tag: 'button',
+    text: { tag: 'plain_text', content: '⏹ 终止' },
+    type: 'danger',
+    behaviors: [{ type: 'callback', value: { cmd: 'stop', scope } }],
   };
 }
 
-function cardHeader(title: string): object {
-  return { title: { tag: 'plain_text', content: title } };
+function footerStatus(kind: 'thinking' | 'streaming'): object {
+  return noteMd(kind === 'thinking' ? '🧠 正在思考' : '✍️ 正在输出');
 }
 
-function quoteBlock(text: string): object {
-  const safe = escapeMd(text).slice(0, 500);
-  return { tag: 'div', text: { tag: 'lark_md', content: `> ${safe}` } };
+function summaryText(phase: RunPhase): string {
+  if (phase === 'interrupted') return '已中断';
+  if (phase === 'error') return '出错';
+  if (phase === 'done') return '已完成';
+  if (phase === 'streaming') return '正在输出';
+  return '思考中';
 }
 
-function escapeMd(s: string): string {
-  return s.replace(/([\\`*_{}\[\]()#+\-.!|>])/g, '\\$1');
+function markdown(content: string): object {
+  return { tag: 'markdown', content };
+}
+
+function noteMd(content: string): object {
+  return { tag: 'markdown', content, text_size: 'notation' };
 }
