@@ -54,6 +54,10 @@ copilot
 
 ## 三步开始用
 
+每步只干一件事：**装到电脑 → 打勾体检 → 拧开启动**。
+
+![①安装 ②体检 ③启动 三格漫画](../assets/guide-illustrations/03-three-gates.png)
+
 ### ① 安装
 
 ```bash
@@ -83,8 +87,6 @@ lark-copilot-bridge status
 
 第一次会依次问你：扫码创建机器人 → 选项目文件夹 → 谁能用（推荐「仅我自己」）。
 
-![安装、体检、开门三道闸](../assets/guide-illustrations/03-three-gates.png)
-
 终端显示「已就绪」后：打开飞书，搜机器人名称，私聊发一句「你好」。
 
 想改文件夹或权限，随时再跑：
@@ -107,19 +109,17 @@ lark-copilot-bridge setup
 - **换项目文件夹**：`/cd 路径`（管理员）
 - **命名工作目录**：`/ws`（管理员；详见 README）
 
-![群聊拉 @ 绳，卡片在呼吸](../assets/guide-illustrations/04-at-and-live-card.png)
+![没@听不见；有@则同一张卡原地更新思考/工具/正文](../assets/guide-illustrations/04-at-and-live-card.png)
 
 若 `doctor` 提示不支持 json 输出，卡片会降级为纯文本流式。升级 Copilot CLI 即可。
 
 ---
 
-## 安全：窄门只进一个项目箱
+## 安全：只给自己，只动一个项目
 
-这个机器人能指挥 **你这台电脑** 上的 Copilot 改文件。
+这个机器人能指挥 **你这台电脑** 上的 Copilot 改文件。请记住三件事：
 
-![窄门守着，整栋家挡在门外](../assets/guide-illustrations/05-narrow-gate-security.png)
-
-请记住三件事：
+![①仅自己 ②别拉进陌生群 ③只动项目文件夹](../assets/guide-illustrations/05-narrow-gate-security.png)
 
 1. 设置里选 **「仅我自己」**
 2. 不要把机器人拉进陌生人可见的群
