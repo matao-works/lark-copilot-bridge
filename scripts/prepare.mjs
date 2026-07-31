@@ -1,34 +1,45 @@
 /**
- * git/npm 安装时 prepare 常在本机还没有 tsup 时触发。
- * - 有 tsup：正常 build
- * - 无 tsup 但已有 dist：跳过（适合已提交产物或二次安装）
- * - 都没有：用 npx 拉 tsup 再 build
+ * git/npm 全局安装时 prepare 环境里经常没有可用的 tsup PATH。
+ * 仓库提交 dist/ 后，安装直接跳过构建；本地开发有 tsup 时再 build。
  */
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 const require = createRequire(import.meta.url);
-const distJs = new URL('../dist/lark-copilot-bridge.js', import.meta.url);
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const distJs = join(root, 'dist', 'lark-copilot-bridge.js');
 
 function run(cmd, args) {
-  const r = spawnSync(cmd, args, { stdio: 'inherit', shell: process.platform === 'win32' });
+  const r = spawnSync(cmd, args, {
+    cwd: root,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+    env: process.env,
+  });
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 
-let hasTsup = false;
-try {
-  require.resolve('tsup');
-  hasTsup = true;
-} catch {
-  hasTsup = false;
+if (existsSync(distJs)) {
+  console.log('prepare: 使用已有 dist/，跳过构建');
+  process.exit(0);
 }
 
-if (hasTsup) {
-  run('npm', ['run', 'build']);
-} else if (existsSync(distJs)) {
-  console.log('prepare: tsup 不可用，使用已有 dist/');
-} else {
-  console.log('prepare: 通过 npx 安装 tsup 并构建…');
-  run('npx', ['--yes', 'tsup']);
+let tsupCli;
+try {
+  tsupCli = require.resolve('tsup/dist/cli-default.js');
+} catch {
+  tsupCli = null;
 }
+
+if (tsupCli) {
+  console.log('prepare: 本地构建 dist/…');
+  run(process.execPath, [tsupCli]);
+  process.exit(0);
+}
+
+console.error('prepare: 缺少 dist/ 且未安装 tsup。');
+console.error('  请在仓库根目录执行: npm install && npm run build');
+process.exit(1);

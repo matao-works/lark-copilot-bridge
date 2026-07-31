@@ -13,7 +13,7 @@
     ".env.example"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "node ./node_modules/tsup/dist/cli-default.js",
     "prepare": "node scripts/prepare.mjs",
     "prepublishOnly": "npm run typecheck && npm run build",
     "start": "node dist/lark-copilot-bridge.js",
