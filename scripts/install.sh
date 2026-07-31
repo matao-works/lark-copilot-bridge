@@ -21,22 +21,18 @@ need_node() {
 
 need_node
 
-echo "→ 安装 ${PKG}（全局）..."
-if npm install -g "$PKG" 2>/dev/null; then
-  echo "✓ 已从 npm 安装"
-else
-  echo "  npm 包未找到，改从 GitHub 安装..."
-  npm install -g "$REPO"
-  echo "✓ 已从 GitHub 安装"
-fi
+echo "→ 安装 ${PKG}（从 GitHub）..."
+npm install -g "$REPO"
+echo "✓ 已安装"
 
 echo ""
 echo "═══════════════════════════════════════════════════"
-echo "  安装完成。运行："
+echo "  安装完成。按下面做即可："
 echo ""
-echo "    lark-copilot-bridge"
+echo "    1) lark-copilot-bridge doctor   # 检查是否准备好"
+echo "    2) lark-copilot-bridge         # 启动（首次会引导设置）"
 echo ""
-echo "  前置：本机已安装并登录 GitHub Copilot CLI"
+echo "  你还需要：已登录的 GitHub Copilot 命令行"
 echo "    curl -fsSL https://gh.io/copilot-install | bash"
-echo "    copilot    # 首次 /login"
+echo "    copilot   # 按提示登录"
 echo "═══════════════════════════════════════════════════"

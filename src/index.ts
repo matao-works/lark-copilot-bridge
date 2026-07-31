@@ -7,6 +7,7 @@ import {
   loadCredentials,
   saveCredentials,
   loadConfig,
+  tryResolveWorkspaceDir,
   type BridgeConfig,
 } from './config.js';
 import {
@@ -26,6 +27,7 @@ import { startKeepalive } from './keepalive.js';
 import { buildSystemPrompt } from './bridge-prompt.js';
 import { canUseBot } from './acl.js';
 import { bridgeContextBlock, xmlBlock } from './prompt-util.js';
+import { shouldRunSetup, runSetupWizard, printSetupRequiredHint } from './setup.js';
 import type { CardActionEvent, CommentEvent } from '@larksuite/channel';
 import { log } from './logger.js';
 
@@ -37,29 +39,59 @@ process.on('uncaughtException', (err) => {
 });
 
 export async function main(): Promise<void> {
-  console.log('检查 copilot CLI...');
+  console.log('');
+  console.log('正在检查本机 GitHub Copilot…');
   if (!(await checkCopilotInstalled())) {
-    console.error('\n✗ 未检测到 copilot CLI。请先安装并登录：');
-    console.error('  curl -fsSL https://gh.io/copilot-install | bash');
-    console.error('  copilot   # 按 /login 登录 GitHub（需 Copilot 订阅）\n');
+    console.error('');
+    console.error('还不能启动：本机没有可用的 GitHub Copilot 命令行工具。');
+    console.error('');
+    console.error('请按顺序做这两步（需要有 Copilot 订阅）：');
+    console.error('  1) 安装：');
+    console.error('       curl -fsSL https://gh.io/copilot-install | bash');
+    console.error('  2) 打开终端输入 copilot，按提示用 GitHub 账号登录');
+    console.error('');
+    console.error('做完后可先自检： lark-copilot-bridge doctor');
+    console.error('');
     process.exit(1);
   }
-  console.log('✓ copilot CLI 已就绪');
+  console.log('✓ Copilot 已就绪');
 
   let creds = loadCredentials();
   if (!creds) {
+    console.log('');
+    console.log('第一次使用：请用手机飞书扫描接下来的二维码，创建机器人。');
+    console.log('（只需扫一次，以后会自动记住）');
     creds = await registerAppByQR();
     saveCredentials(creds);
   } else {
     log.info('使用已保存的飞书应用: %s', creds.appId);
   }
 
-  const config = loadConfig(creds);
+  if (shouldRunSetup()) {
+    const result = await runSetupWizard(creds);
+    if (!result && !tryResolveWorkspaceDir()) {
+      printSetupRequiredHint();
+      process.exit(1);
+    }
+  }
+
+  let config: BridgeConfig;
+  try {
+    config = loadConfig(creds);
+  } catch (err) {
+    console.error('');
+    console.error(`无法启动：${(err as Error).message}`);
+    console.error('');
+    console.error('请运行设置向导： lark-copilot-bridge setup');
+    console.error('');
+    process.exit(1);
+  }
+
   const lark = new LarkBridge(creds);
   const session = new SessionStore(config.maxHistoryRounds);
   const ownerOpenId = creds.creatorOpenId;
   if (!ownerOpenId) {
-    log.warn('未记录 creatorOpenId：特权命令在无用户白名单时对所有人开放。重新扫码可绑定 owner。');
+    log.warn('未记录扫码账号：建议运行 lark-copilot-bridge logout 后重新扫码。');
   }
 
   let queue: MessageQueue<IncomingMessage>;
@@ -117,11 +149,55 @@ export async function main(): Promise<void> {
   process.on('SIGINT', () => void stop('SIGINT'));
   process.on('SIGTERM', () => void stop('SIGTERM'));
 
-  console.log('\n═══════════════════════════════════════════════════');
-  console.log('  🤖 机器人已上线！在飞书里发消息即可。');
-  console.log('     私聊直接发，群聊需 @机器人');
-  console.log('     发 /help 看可用命令');
-  console.log('═══════════════════════════════════════════════════\n');
+  printReadyBanner({
+    botName: lark.botIdentity?.name,
+    botOpenId: lark.botIdentity?.openId,
+    cwd: config.copilotCwd,
+    timeoutMs: config.copilotTimeout,
+    allowedUsers: config.allowedUsers,
+    ownerOpenId,
+  });
+}
+
+function printReadyBanner(opts: {
+  botName?: string;
+  botOpenId?: string;
+  cwd: string;
+  timeoutMs: number;
+  allowedUsers: string[];
+  ownerOpenId?: string;
+}): void {
+  const name = opts.botName || '（请在飞书搜索刚创建的应用名）';
+  const timeoutMin = opts.timeoutMs > 0 ? `${Math.round(opts.timeoutMs / 60_000)} 分钟` : '不限制';
+  const who = opts.allowedUsers.length === 0
+    ? '任何人（只要能找到这个机器人）— 有风险'
+    : opts.ownerOpenId && opts.allowedUsers.length === 1 && opts.allowedUsers[0] === opts.ownerOpenId
+      ? '仅你自己'
+      : `已限制 ${opts.allowedUsers.length} 人`;
+
+  console.log('');
+  console.log('═══════════════════════════════════════════════════');
+  console.log('  已就绪，可以去飞书聊天了');
+  console.log('');
+  console.log(`  机器人名称: ${name}`);
+  console.log(`  它会改这里的文件: ${opts.cwd}`);
+  console.log(`  单次任务最长: ${timeoutMin}`);
+  console.log(`  谁能用: ${who}`);
+  console.log('');
+  console.log('  接下来请你：');
+  console.log(`    1. 打开飞书，搜索「${opts.botName || '刚才扫码创建的机器人'}」`);
+  console.log('    2. 点进去，直接发一句话，例如：你好');
+  console.log('    3. 群聊里要用的话，必须 @ 它');
+  console.log('');
+  console.log('  常用：发 /help 看命令；想换项目文件夹可运行');
+  console.log('        lark-copilot-bridge setup');
+  console.log('');
+  console.log('  ⚠ 请保持这个窗口开着。关掉后，飞书里的机器人会下线。');
+  if (opts.allowedUsers.length === 0) {
+    console.log('  ⚠ 当前不限制使用者。可再运行 setup 改成「仅我自己」。');
+  }
+  console.log('═══════════════════════════════════════════════════');
+  console.log('');
 }
 
 interface HandleContext {

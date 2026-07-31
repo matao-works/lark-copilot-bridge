@@ -1,8 +1,7 @@
 /**
  * 配置 + 凭证持久化
  *
- * 对照原项目 ~/.lark-channel/config.json 的 profile 体系，简化为单文件：
- *   ~/.lark-copilot-bridge/config.json
+ * 单文件：~/.lark-copilot-bridge/config.json
  * 存扫码拿到的 appId/appSecret/tenant，下次启动免扫码。
  *
  * ACL 变更同时改内存 BridgeConfig + 磁盘，避免「提示成功但当场不生效」。
@@ -16,11 +15,12 @@ import type { AppCredentials } from './types.js';
 
 export type { AppCredentials } from './types.js';
 
-const CONFIG_DIR = resolve(homedir(), '.lark-copilot-bridge');
-const CONFIG_FILE = resolve(CONFIG_DIR, 'config.json');
+export const CONFIG_DIR = resolve(homedir(), '.lark-copilot-bridge');
+export const CONFIG_FILE = resolve(CONFIG_DIR, 'config.json');
+export const ENV_FILE = resolve(CONFIG_DIR, '.env');
 
 // 全局安装时从固定目录读配置；当前目录 .env 可覆盖
-loadEnv({ path: resolve(CONFIG_DIR, '.env') });
+loadEnv({ path: ENV_FILE });
 loadEnv();
 
 export interface BridgeConfig {
@@ -46,6 +46,8 @@ interface PersistedConfig {
   allowedChats?: string[];
   admins?: string[];
   workspaces?: Record<string, string>;
+  /** 是否完成过首次向导（工作目录 + 谁能用） */
+  setupCompleted?: boolean;
 }
 
 /** 上次读盘是否成功；失败后禁止覆盖写入，避免抹掉凭证 */
@@ -102,16 +104,110 @@ export function saveCredentials(creds: AppCredentials): void {
   log.info('凭证已保存到 %s', CONFIG_FILE);
 }
 
+/** 清除飞书凭证（保留 cwd / ACL / workspaces），下次启动重新扫码 */
+export function clearCredentials(): boolean {
+  if (!existsSync(CONFIG_FILE)) return false;
+  const existing = readPersisted();
+  const {
+    appId: _a,
+    appSecret: _s,
+    tenant: _t,
+    creatorOpenId: _c,
+    ...rest
+  } = existing;
+  writePersisted(rest as PersistedConfig, { allowCorruptOverwrite: true });
+  return true;
+}
+
+/** 供 `config show`：脱敏后的配置快照 */
+export function getConfigSummary(): {
+  configDir: string;
+  configFile: string;
+  envFile: string;
+  hasCredentials: boolean;
+  setupCompleted: boolean;
+  appId?: string;
+  tenant?: string;
+  creatorOpenId?: string;
+  copilotCwd?: string;
+  copilotTimeout?: number;
+  allowedUsers: string[];
+  allowedChats: string[];
+  admins: string[];
+  workspaces: Record<string, string>;
+} {
+  const persisted = readPersisted();
+  const hasCredentials = Boolean(persisted.appId && persisted.appSecret);
+  return {
+    configDir: CONFIG_DIR,
+    configFile: CONFIG_FILE,
+    envFile: ENV_FILE,
+    hasCredentials,
+    setupCompleted: Boolean(persisted.setupCompleted),
+    appId: persisted.appId,
+    tenant: persisted.tenant,
+    creatorOpenId: persisted.creatorOpenId,
+    copilotCwd: resolveAllowedCwdHint(persisted),
+    copilotTimeout: Number(process.env.COPILOT_TIMEOUT || persisted.copilotTimeout) || 300_000,
+    allowedUsers: resolveAllowedUsers(persisted),
+    allowedChats: [...(persisted.allowedChats ?? [])],
+    admins: [...(persisted.admins ?? [])],
+    workspaces: { ...(persisted.workspaces ?? {}) },
+  };
+}
+
+function resolveAllowedUsers(persisted: PersistedConfig): string[] {
+  const fromEnv = (process.env.LARK_ALLOWED_USERS || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  if (fromEnv.length > 0) return fromEnv;
+  return [...(persisted.allowedUsers ?? [])];
+}
+
+function resolveAllowedCwdHint(persisted: PersistedConfig): string {
+  return process.env.COPILOT_CWD || persisted.copilotCwd || process.cwd();
+}
+
+export function isSetupCompleted(): boolean {
+  return Boolean(readPersisted().setupCompleted);
+}
+
+/** 尝试解析可用工作目录；不合法则返回 null（不抛错） */
+export function tryResolveWorkspaceDir(): string | null {
+  const persisted = readPersisted();
+  const raw = process.env.COPILOT_CWD || persisted.copilotCwd;
+  if (!raw) return null;
+  try {
+    return validateWorkspaceDir(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** 保存首次向导结果 */
+export function saveSetupPreferences(opts: {
+  copilotCwd: string;
+  allowedUsers: string[];
+  setupCompleted?: boolean;
+}): void {
+  const existing = readPersisted();
+  writePersisted({
+    ...existing,
+    copilotCwd: opts.copilotCwd,
+    allowedUsers: [...opts.allowedUsers],
+    setupCompleted: opts.setupCompleted ?? true,
+  }, { allowCorruptOverwrite: true });
+}
+
 /** 加载完整配置（凭证 + copilot 选项） */
 export function loadConfig(credentials: AppCredentials): BridgeConfig {
   const persisted = readPersisted();
 
-  const allowedUsers = (process.env.LARK_ALLOWED_USERS || '')
-    .split(',').map((s) => s.trim()).filter(Boolean);
+  const allowedUsers = resolveAllowedUsers(persisted);
   const allowedChats = [...(persisted.allowedChats ?? [])];
   const admins = [...(persisted.admins ?? [])];
 
-  const copilotCwd = validateWorkspaceDir(process.env.COPILOT_CWD || persisted.copilotCwd || process.cwd());
+  const cwdRaw = process.env.COPILOT_CWD || persisted.copilotCwd || process.cwd();
+  const copilotCwd = validateWorkspaceDir(cwdRaw);
 
   const config: BridgeConfig = {
     credentials,
@@ -133,13 +229,23 @@ function parseArgs(s: string | undefined): string[] {
   return s.trim().split(/\s+/).filter(Boolean);
 }
 
-/** 校验工作目录是否安全可用（/cd 命令用），支持 ~ 展开 */
+/** 校验工作目录是否安全可用，支持 ~ 展开 */
 export function validateWorkspaceDir(cwd: string): string {
   const abs = resolve(cwd.replace(/^~(?=$|\/|\\)/, homedir()));
-  if (!existsSync(abs)) throw new Error(`目录不存在: ${abs}`);
-  if (!statSync(abs).isDirectory()) throw new Error(`不是目录: ${abs}`);
-  if (abs === '/' || abs === homedir()) {
-    throw new Error(`不能是根目录或 home 目录（${abs}），请指定具体项目目录`);
+  if (!existsSync(abs)) {
+    throw new Error(`找不到这个文件夹：${abs}\n请检查路径是否复制完整，或在访达里确认文件夹还在。`);
+  }
+  if (!statSync(abs).isDirectory()) {
+    throw new Error(`这不是文件夹：${abs}\n请选择一个文件夹，而不是某个文件。`);
+  }
+  if (abs === '/') {
+    throw new Error('不能选择整个电脑（/）。请选一个具体的项目文件夹。');
+  }
+  if (abs === homedir()) {
+    throw new Error(
+      `不能选择整个用户主目录（${abs}）。\n`
+      + '请选里面的某个项目文件夹，例如桌面上的工程目录。',
+    );
   }
   return abs;
 }

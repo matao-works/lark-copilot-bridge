@@ -1,12 +1,11 @@
 /**
  * 会话管理
  *
- * copilot CLI 支持 --resume=<session-id>（和 claude --resume 对齐）：
+ * copilot CLI 支持 --resume=<session-id>：
  *   - 每次跑完从退出摘要提取 session-id 存回
  *   - 下次用 --resume=<id> 恢复，copilot 自己保持上下文
- *   - 不再需要自维护历史拼 prompt
  *
- * 保留历史数组作为 fallback（万一 session-id 提取失败）+ /status 显示。
+ * 保留历史数组作为 fallback（session-id 提取失败时）+ /status 显示。
  */
 import { log } from './logger.js';
 

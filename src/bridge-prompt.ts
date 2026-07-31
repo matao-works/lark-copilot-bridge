@@ -1,14 +1,8 @@
 /**
- * Bridge 系统提示（对照原项目 src/agent/bridge-system-prompt.ts，针对 copilot 精简）
+ * Bridge 系统提示：飞书侧运行约定（针对 Copilot CLI）
  *
- * 原项目给 claude 注入完整 bridge 运行约定（bridge_context/quoted_message/
- * interactive_card/卡片回调签名/lark-cli 环境/OAuth 流程）。
- *
- * copilot 版精简：保留 bridge_context/quoted_message/多消息标注/空消息约定，
- * 去掉 lark-cli 环境/OAuth/卡片回调签名（copilot 不调 lark-cli，我们用简单 value 不签名）。
- *
- * 注入方式：copilot 无 --append-system-prompt-file，作为首次 prompt 前缀注入。
- * copilot --resume 会保留首次上下文，后续不重复传。
+ * 注入 bridge_context / quoted_message / 多消息标注 / 空消息约定。
+ * 注入方式：作为首次 prompt 前缀；--resume 会保留首次上下文，后续不重复传。
  */
 export const BRIDGE_SYSTEM_PROMPT = `# lark-copilot-bridge 运行约定
 

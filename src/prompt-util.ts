@@ -1,6 +1,5 @@
 /**
  * Prompt 组装辅助：上下文用 JSON；用户正文包进标签并转义尖括号，降低注入破框风险。
- * 个人自用场景够用，不追求企业级沙箱。
  */
 
 export function bridgeContextBlock(fields: Record<string, string>): string {

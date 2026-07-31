@@ -164,19 +164,36 @@ function stripAnsi(s: string): string {
 }
 
 export async function checkCopilotInstalled(): Promise<boolean> {
+  const info = await getCopilotVersion();
+  return info.ok;
+}
+
+/** 探测 copilot CLI 是否可用，并返回版本字符串 */
+export async function getCopilotVersion(): Promise<{ ok: boolean; version?: string; error?: string }> {
   return new Promise((resolve) => {
     const child = spawn('copilot', ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
     let done = false;
-    const finish = (ok: boolean) => {
+    const finish = (result: { ok: boolean; version?: string; error?: string }) => {
       if (done) return;
       done = true;
-      resolve(ok);
+      resolve(result);
     };
-    child.on('error', () => finish(false));
-    child.on('close', (code) => finish(code === 0));
+    child.stdout?.on('data', (c: Buffer) => { stdout += c.toString('utf8'); });
+    child.stderr?.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
+    child.on('error', (err) => finish({ ok: false, error: err.message }));
+    child.on('close', (code) => {
+      if (code === 0) {
+        const version = stripAnsi((stdout || stderr).trim().split('\n')[0] ?? '').trim();
+        finish({ ok: true, version: version || 'unknown' });
+      } else {
+        finish({ ok: false, error: (stderr || stdout || `exit ${code}`).trim().slice(0, 200) });
+      }
+    });
     setTimeout(() => {
       try { child.kill('SIGKILL'); } catch { /* ignore */ }
-      finish(false);
+      finish({ ok: false, error: '探测超时（5s）' });
     }, 5000);
   });
 }

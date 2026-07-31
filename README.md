@@ -1,153 +1,162 @@
 # lark-copilot-bridge
 
-在飞书里和**本机** [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli) 对话。消息走 WebSocket 长连接，回复用流式卡片实时刷新。
+让你在 **飞书** 里，跟自己电脑上的 **GitHub Copilot** 对话。  
+Copilot 会在你指定的文件夹里读文件、改代码；回复会一条条出现在飞书卡片里。
 
-适合个人自用：扫码创建飞书应用，凭证本地保存，默认不锁聊天白名单。
+> 你不需要会写代码才能用，但需要会打开「终端」窗口，并保持它开着。
 
-## 快速开始
+---
 
-**前置：** Node.js ≥ 20，且本机已安装并登录 Copilot CLI：
+## 你需要先准备什么
+
+1. **一台 Mac / Windows / Linux 电脑**（机器人跑在这台电脑上）
+2. **[Node.js 20 或更高](https://nodejs.org/)**（官网下载安装包，一路下一步即可）
+3. **GitHub Copilot 订阅**，并安装命令行工具：
 
 ```bash
 curl -fsSL https://gh.io/copilot-install | bash
-copilot   # 首次运行按提示 /login
+copilot
 ```
 
-### 方式一：直接运行（推荐）
+打开后按提示登录 GitHub。登录成功即可关掉这个 `copilot` 窗口。
 
-```bash
-npx lark-copilot-bridge
-```
+4. **手机上的飞书**，用来扫码创建机器人
 
-### 方式二：全局安装
+---
 
-```bash
-npm install -g lark-copilot-bridge
-lark-copilot-bridge
-```
+## 三步开始用
 
-npm 尚未发布时，可从 GitHub 安装：
+### ① 安装
+
+在终端粘贴：
 
 ```bash
 npm install -g github:ma345564280/lark-copilot-bridge
 ```
 
-或使用安装脚本：
+或：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ma345564280/lark-copilot-bridge/main/scripts/install.sh | bash
 ```
 
-**无需 clone 仓库，无需在项目目录里 `npm start`。**
-
-### 首次运行
-
-终端出现二维码 → 飞书 App 扫码 → 自动创建应用并保存凭证到 `~/.lark-copilot-bridge/config.json`。
-
-```
-✓ copilot CLI 已就绪
-请用飞书 App 扫描以下二维码完成应用创建：
-...
-✓ 应用创建成功
-
-═══════════════════════════════════════════════════
-  🤖 机器人已上线！在飞书里发消息即可。
-     私聊直接发，群聊需 @机器人
-     发 /help 看可用命令
-═══════════════════════════════════════════════════
-```
-
-在飞书里搜索机器人名称，私聊或群聊 `@` 它即可。
-
-## 飞书里怎么用
-
-| 场景 | 用法 |
-|------|------|
-| 私聊 | 直接发消息 |
-| 群聊 | 需要 @ 机器人 |
-| 中断任务 | 点卡片底部 **⏹ 终止**，或发 `/stop` |
-| 新话题 | `/new` |
-
-回复以流式卡片挂在你的消息下方，Copilot 输出过程实时更新。
-
-## 命令
-
-| 命令 | 说明 |
-|------|------|
-| `/new` `/reset` | 清空当前会话 |
-| `/stop` | 中断正在运行的任务 |
-| `/status` | 查看 cwd、超时、运行状态 |
-| `/help` | 命令帮助 |
-| `/timeout [分钟\|off]` | 设置当前会话超时 |
-| `/cd <path>` | 切换工作目录（owner，重置会话） |
-| `/ws list\|save\|use\|remove` | 工作目录别名（owner） |
-| `/invite group` | 把当前群加入响应白名单（owner） |
-| `/invite admin <open_id>` | 添加管理员（owner） |
-| `/remove group\|admin ...` | 移出白名单 / 管理员（owner） |
-
-## 配置
-
-### 数据目录
-
-所有持久化数据在：
-
-```
-~/.lark-copilot-bridge/
-├── config.json    # 飞书凭证、群白名单、工作目录别名等
-└── .env           # 可选环境变量（推荐放这里）
-```
-
-首次扫码后**不必**手动填 App ID / Secret。
-
-### 环境变量
-
-复制示例到数据目录（可选）：
+### ② 检查一下（推荐）
 
 ```bash
-mkdir -p ~/.lark-copilot-bridge
-cp .env.example ~/.lark-copilot-bridge/.env
+lark-copilot-bridge doctor
 ```
 
-| 变量 | 说明 | 默认 |
-|------|------|------|
-| `COPILOT_CWD` | Copilot 工作目录 | 启动时当前目录 |
-| `COPILOT_EXTRA_ARGS` | 追加 copilot 参数 | 无 |
-| `COPILOT_TIMEOUT` | 超时（毫秒） | `300000` |
-| `LARK_ALLOWED_USERS` | 用户 open_id 白名单，逗号分隔 | 空 = 不限制 |
-| `LOG_LEVEL` | 日志级别 | `info` |
+全是 ✓ 就可以进入下一步。若有 ✗，按它提示的「→」去做。
 
-也可在聊天里用 `/cd`、`/timeout` 调整，无需改文件。
+### ③ 启动
+
+```bash
+lark-copilot-bridge
+```
+
+第一次会依次问你：
+
+1. **用手机飞书扫二维码**（创建机器人，只需一次）
+2. **项目文件夹在哪**（Copilot 只能动这个文件夹里的文件）  
+   - Mac：在访达里打开项目文件夹，把路径粘贴过来；或把文件夹拖进终端
+3. **谁能用**（推荐选「仅我自己」）
+
+然后终端会显示「已就绪」。请：
+
+1. **不要关闭这个窗口**（关掉 = 机器人下线）
+2. 打开飞书，搜索它显示的机器人名称
+3. 私聊发一句「你好」试一下
+
+想改文件夹或权限，随时再运行：
+
+```bash
+lark-copilot-bridge setup
+```
+
+---
+
+## 在飞书里怎么聊
+
+| 你想做的事 | 怎么做 |
+|---|---|
+| 私聊 | 直接打字发送 |
+| 群聊 | 必须 **@机器人**，否则它听不见 |
+| 停掉正在做的事 | 点卡片上的 **终止**，或发 `/stop` |
+| 换个新话题 | 发 `/new` |
+| 看有哪些命令 | 发 `/help` |
+
+---
+
+## 常用终端命令
+
+| 命令 | 干什么 |
+|---|---|
+| `lark-copilot-bridge` | 启动 |
+| `lark-copilot-bridge setup` | 重选项目文件夹 / 谁能用 |
+| `lark-copilot-bridge doctor` | 检查是否准备好 |
+| `lark-copilot-bridge config` | 看看当前设置 |
+| `lark-copilot-bridge logout` | 解除飞书绑定，下次重新扫码 |
+
+---
+
+## 安全提醒（请一定看）
+
+这个机器人能指挥 **你这台电脑** 上的 Copilot 改文件。
+
+- 推荐在设置里选 **「仅我自己」**
+- 不要把机器人拉进陌生人可见的群
+- 项目文件夹请选具体工程目录，不要选整个「用户主文件夹」
+
+---
 
 ## 常见问题
 
-**群聊发了消息没反应**  
-群聊必须 @ 机器人。若启用了群白名单，owner 需在本群发 `/invite group`。
+**飞书里没反应？**  
+群聊必须 @ 它。也请确认电脑上的终端窗口还开着。
 
-**提示 copilot 未安装**  
-本机执行 `copilot --version` 检查；未登录则运行 `copilot` 完成 GitHub 登录。
+**提示没有 Copilot？**  
+在终端运行 `copilot`，按提示登录。需要有效的 Copilot 订阅。
 
-**换电脑 / 重装**  
-复制 `~/.lark-copilot-bridge/config.json` 到新机器，安装 CLI 后直接 `lark-copilot-bridge` 即可，无需重新扫码（除非要换应用）。
+**它改错文件夹了？**  
+运行 `lark-copilot-bridge setup`，重新选项目文件夹。
 
-**开发调试**  
-Clone 仓库后 `npm install && npm run dev`，等价于跑源码入口。
+**换电脑了？**  
+在新电脑重新安装并扫码；或把旧电脑的 `~/.lark-copilot-bridge/config.json` 拷过去（高级用法）。
 
-## 开发
+**想换一个飞书机器人？**  
+```bash
+lark-copilot-bridge logout
+lark-copilot-bridge
+```
+
+---
+
+## 进阶配置（可选）
+
+设置保存在：
+
+```
+~/.lark-copilot-bridge/config.json
+```
+
+也可以放环境变量（一般不用手动改）：
+
+| 变量 | 含义 |
+|---|---|
+| `COPILOT_CWD` | 项目文件夹 |
+| `LARK_ALLOWED_USERS` | 允许使用的用户 ID（逗号分隔） |
+| `COPILOT_TIMEOUT` | 超时毫秒数，默认 5 分钟 |
+| `LOG_LEVEL` | 日志详细程度 |
+
+---
+
+## 开发者
 
 ```bash
 git clone https://github.com/ma345564280/lark-copilot-bridge.git
 cd lark-copilot-bridge
 npm install
-npm run dev          # 源码热跑
-npm run typecheck    # 类型检查
-npm run build        # 构建 dist/
-```
-
-发布 npm 包：
-
-```bash
-npm login
-npm publish
+npm run dev
 ```
 
 ## 许可证

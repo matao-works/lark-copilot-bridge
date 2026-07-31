@@ -1,5 +1,5 @@
 /**
- * 消息队列 + debounce 合批（对照原项目 src/bot/pending-queue.ts）
+ * 消息队列 + debounce 合批
  *
  * 机制：
  *   - 同 scope 消息累积 DEBOUNCE_MS（600ms）后合并成一批 flush

@@ -1,6 +1,6 @@
 {
   "name": "lark-copilot-bridge",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "在飞书里和本地 GitHub Copilot CLI 对话",
   "type": "module",
   "bin": {
@@ -9,7 +9,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    ".env.example"
   ],
   "scripts": {
     "build": "tsup",

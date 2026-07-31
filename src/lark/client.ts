@@ -1,15 +1,8 @@
 /**
  * 飞书通信层（基于 @larksuite/channel）
  *
- * 这是对照原项目 src/bot/wizard.ts + src/bot/channel.ts 重写的版本，
- * 终于用对了依赖：
- *   - registerApp()      — 扫码创建飞书应用（终端二维码），凭证自动返回
- *   - createLarkChannel() — WS 长连接 + 消息收发 + 流式卡片，SDK 搞定重连/心跳/去重
- *
- * 之前两次都跑偏了：
- *   1. 用 node-sdk 的 WSClient + 让用户手动建应用 ❌
- *   2. 用 lark-cli event consume + config init --new ❌（lark-cli 不能建应用，只能绑定）
- * 原项目用的是 @larksuite/channel 这个更高层的包，registerApp 才是扫码建应用的正确入口。
+ * - registerApp()       — 扫码创建飞书应用，凭证自动返回
+ * - createLarkChannel() — WS 长连接 + 消息收发 + 流式卡片（SDK 处理重连/心跳/去重）
  */
 import {
   createLarkChannel,
@@ -26,10 +19,7 @@ import type { AppCredentials, SendOpts } from '../types.js';
 
 export type { AppCredentials, SendOpts } from '../types.js';
 
-/**
- * 扫码创建飞书应用（首次启动用）。
- * 对照原项目 src/bot/wizard.ts 的 runRegistrationWizard。
- */
+/** 扫码创建飞书应用（首次启动用）。 */
 export async function registerAppByQR(): Promise<AppCredentials> {
   console.log('\n未检测到飞书应用配置，进入扫码创建向导。\n');
 
@@ -149,9 +139,6 @@ export class LarkBridge {
     return id ? { openId: id.openId, name: id.name } : undefined;
   }
 
-  /** 发送选项（对照原项目 commandReplyOptions / sendOpts） */
-  // keep type export near top after imports — actually add before class
-
   /** 发送纯文本消息 */
   async sendText(chatId: string, text: string, opts?: SendOpts): Promise<string> {
     const result = await this.channel.send(chatId, { text }, opts);
@@ -169,7 +156,7 @@ export class LarkBridge {
     }
   }
 
-  /** 拉取话题上游消息（首次进入话题时给 copilot 上下文，对照原项目 fetchTopicContext） */
+  /** 拉取话题上游消息（首次进入话题时给 copilot 上下文） */
   async fetchTopicMessages(threadId: string, maxMessages = 20): Promise<{ senderName: string; content: string }[]> {
     try {
       const res = await (this.channel as any).rawClient.im.v1.message.list({
@@ -196,7 +183,7 @@ export class LarkBridge {
     return (this.channel as any).rawClient;
   }
 
-  /** 拉取评论内容（含 quote + replies，对照原项目 comments.ts fetchCommentContext） */
+  /** 拉取评论内容（含 quote + replies） */
   async fetchComment(fileToken: string, fileType: string, commentId: string): Promise<any> {
     try {
       return await (this.channel as any).comments.fetch({ fileToken, fileType }, commentId);
@@ -206,7 +193,7 @@ export class LarkBridge {
     }
   }
 
-  /** 回复评论（对照原项目 comments.ts postCommentReply） */
+  /** 回复评论 */
   async replyComment(fileToken: string, fileType: string, commentId: string, text: string, isWhole = false): Promise<void> {
     try {
       await (this.channel as any).comments.reply({ fileToken, fileType }, commentId, text, { topLevel: isWhole });
@@ -236,14 +223,13 @@ export class LarkBridge {
     await ch.connect();
   }
 
-  /** 撤回消息（空流式回复时用，对照原项目 recallIfEmptyStreamedReply） */
+  /** 撤回消息（空流式回复时用） */
   async recallMessage(messageId: string): Promise<void> {
     await this.channel.recallMessage(messageId);
   }
 
   /**
    * 流式卡片回复：先发 initialCard，然后 producer 里用 ctrl.update 增量更新。
-   * 对照原项目 channel.stream({ card: { initial, producer } })。
    * 返回 stream 消息 id，供空回复撤回。
    */
   async streamCard(

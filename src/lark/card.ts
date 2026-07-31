@@ -1,5 +1,5 @@
 /**
- * 飞书卡片（对齐原项目 src/card/run-renderer.ts）
+ * 飞书卡片
  *
  * UX 原则：
  * - schema 2.0 + body.elements，无顶层 header（避免「✅ Copilot 回复」噪音）
@@ -9,7 +9,7 @@
 
 export type RunPhase = 'thinking' | 'streaming' | 'done' | 'error' | 'interrupted';
 
-/** 思考中 / 流式中 / 终态 — 统一入口，对照 renderCard(state) */
+/** 思考中 / 流式中 / 终态 — 统一入口 */
 export function runCard(opts: {
   scope: string;
   phase: RunPhase;

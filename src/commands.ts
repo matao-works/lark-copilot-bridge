@@ -1,8 +1,8 @@
 /**
- * 斜杠命令系统（对照原项目 src/commands/index.ts）
+ * 斜杠命令系统
  *
  * - 普通命令：谁能聊天谁就能用（/new /help /status /stop /timeout）
- * - 特权命令：仅 owner/admin（/invite /remove /cd /ws）——个人自用不挡扫码本人
+ * - 特权命令：仅 owner/admin（/invite /remove /cd /ws）
  * - 回执一律 replyTo 用户消息
  */
 import type { IncomingMessage } from './lark/client.js';
@@ -73,19 +73,25 @@ async function requirePrivilege(ctx: CommandContext): Promise<boolean> {
   return false;
 }
 
-const HELP_BODY = `**命令列表**
+const HELP_BODY = `**怎么用**
 
-- \`/new\` \`/reset\` — 清空当前会话
-- \`/cd <path>\` — 切换工作目录（owner，会重置会话）
-- \`/ws list|save|use|remove\` — 工作目录别名（owner）
-- \`/status\` — 查看当前状态
-- \`/stop\` — 停止当前任务（也可点卡片 ⏹ 终止）
-- \`/timeout [N|off]\` — 设置当前会话超时（分钟）
-- \`/invite group|admin\` — 白名单 / 管理员（owner）
-- \`/remove group|admin\` — 移出白名单 / 管理员（owner）
-- \`/help\` — 本帮助
+直接打字发消息即可（群聊请 @我）。
 
-其他内容直接发给 Copilot。私聊无需 @，群聊需 @机器人。`;
+**常用命令**
+
+- \`/new\` — 换个新话题
+- \`/stop\` — 停下正在做的事（也可点卡片「终止」）
+- \`/status\` — 看看当前状态
+- \`/whoami\` — 查看我的用户编号（给管理员用）
+- \`/help\` — 本说明
+
+**进阶（一般不用）**
+
+- \`/cd 文件夹路径\` — 换项目文件夹（需管理员）
+- \`/ws\` — 工作文件夹别名
+- \`/timeout\` — 调整超时
+- \`/invite\` \`/remove\` — 白名单 / 管理员
+`;
 
 export async function handleCommand(text: string, ctx: CommandContext): Promise<CommandResult> {
   const trimmed = text.trim();
@@ -108,6 +114,17 @@ export async function handleCommand(text: string, ctx: CommandContext): Promise<
 
     case '/help': {
       await replyCard(ctx, infoCard('💡 使用帮助', HELP_BODY));
+      return { handled: true };
+    }
+
+    case '/whoami':
+    case '/id': {
+      await replyText(
+        ctx,
+        `你的用户编号：\`${ctx.senderId}\`\n\n`
+        + `若要让管理员把你加进可用名单，把上面这串发给对方，对方发送：\n`
+        + `\`/invite admin ${ctx.senderId}\``,
+      );
       return { handled: true };
     }
 
@@ -159,13 +176,23 @@ export async function handleCommand(text: string, ctx: CommandContext): Promise<
           await replyText(ctx, added ? '✅ 已把当前群加入白名单（立即生效）。' : '当前群已在白名单中。');
         } else if (sub === 'admin') {
           if (!target) {
-            await replyText(ctx, '用法：`/invite admin <open_id>`');
+            await replyText(
+              ctx,
+              '用法：`/invite admin <open_id>`\n\n'
+              + '对方先私聊机器人发 `/whoami`，把返回的 open_id 发给你即可。',
+            );
           } else {
             const added = addAdmin(ctx.config, target);
             await replyText(ctx, added ? `✅ 已添加管理员：${target}` : `${target} 已是管理员`);
           }
         } else {
-          await replyText(ctx, '用法：`/invite group` 或 `/invite admin <open_id>`');
+          await replyText(
+            ctx,
+            '用法：\n'
+            + '• `/invite group` — 把当前群加入白名单\n'
+            + '• `/invite admin <open_id>` — 添加管理员\n\n'
+            + '获取 open_id：让对方发 `/whoami`',
+          );
         }
       } catch (err) {
         await replyText(ctx, `❌ ${(err as Error).message}`);
@@ -197,8 +224,15 @@ export async function handleCommand(text: string, ctx: CommandContext): Promise<
       return { handled: true };
     }
 
-    default:
+    default: {
+      // 像 /foo 的未知命令给出提示；像 /Users/... 的路径留给 Copilot
+      const name = cmd.slice(1);
+      if (/^[a-z][\w-]*$/i.test(name)) {
+        await replyText(ctx, `未知命令 \`${cmd}\`。发 /help 查看可用命令。`);
+        return { handled: true };
+      }
       return { handled: false };
+    }
   }
 }
 

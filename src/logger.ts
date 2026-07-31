@@ -1,8 +1,7 @@
 /**
- * 日志模块 —— 最小可用版本
+ * 日志模块
  *
- * 原项目用结构化日志（带 profile/级别/脱敏）。
- * MVP 用带级别前缀的 console 输出，够看清流程就行。
+ * 带级别前缀的 console 输出；级别由 LOG_LEVEL 控制。
  */
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
