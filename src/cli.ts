@@ -250,6 +250,19 @@ export async function runDoctor(): Promise<number> {
 
   console.log('');
   if (failed === 0) {
+    const summary = getConfigSummary();
+    if (!summary.hasCredentials) {
+      console.log('本机依赖已就绪。下一步请前台启动并扫码：');
+      console.log('  lark-copilot-bridge');
+      return 0;
+    }
+    if (!summary.setupCompleted) {
+      console.log('飞书已绑定，但首次设置未完成。请运行：');
+      console.log('  lark-copilot-bridge');
+      console.log('或：');
+      console.log('  lark-copilot-bridge setup');
+      return 0;
+    }
     console.log('看起来可以了。任选一种启动方式：');
     console.log('  lark-copilot-bridge          # 前台（关掉窗口会下线）');
     console.log('  lark-copilot-bridge start    # 后台常驻（推荐）');

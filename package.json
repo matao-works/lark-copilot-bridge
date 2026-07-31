@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "prepare": "npm run build",
+    "prepare": "node scripts/prepare.mjs",
     "prepublishOnly": "npm run typecheck && npm run build",
     "start": "node dist/lark-copilot-bridge.js",
     "dev": "node --import tsx bin/lark-copilot-bridge.ts",
