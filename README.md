@@ -52,16 +52,7 @@ lark-copilot-bridge doctor
 
 ### ③ 启动
 
-**推荐：后台常驻**（关掉终端也继续在线；登录后自动起来）
-
-```bash
-lark-copilot-bridge start
-lark-copilot-bridge status
-```
-
-> 服务命令必须用**全局安装**的 CLI。不要用 `npx … start`——守护进程会记下临时缓存路径，缓存一清就挂。
-
-**或者：前台跑**
+**第一次请先前台跑一遍**（扫码、选项目文件夹、选谁能用）：
 
 ```bash
 lark-copilot-bridge
@@ -80,11 +71,23 @@ lark-copilot-bridge
 2. 私聊发一句「你好」试一下
 3. 也可直接发**图片或文件**（会下载到本机再交给 Copilot）
 
+飞书已经能聊之后，再改成**后台常驻**（关掉终端也继续在线；登录后自动起来）：
+
+```bash
+lark-copilot-bridge start
+lark-copilot-bridge status
+```
+
+> 服务命令必须用**全局安装**的 CLI。不要用 `npx … start`——守护进程会记下临时缓存路径，缓存一清就挂。  
+> `start` **不会**带你扫码；没绑定或没选好文件夹时会失败，并提示你先跑前台或 `setup`。
+
 想改文件夹或权限，随时再运行：
 
 ```bash
 lark-copilot-bridge setup
 ```
+
+若正在用后台常驻，改完后执行一次 `lark-copilot-bridge restart`。
 
 ---
 
