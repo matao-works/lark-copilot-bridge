@@ -22,8 +22,21 @@ need_node() {
 need_node
 
 echo "→ 安装 ${PKG}（从 GitHub）..."
-npm install -g "$REPO"
-echo "✓ 已安装"
+if ! npm install -g "$REPO"; then
+  echo "→ 直接安装失败，改用 pack 回退…"
+  TMP="$(mktemp -d)"
+  cleanup() { rm -rf "$TMP"; }
+  trap cleanup EXIT
+  (
+    cd "$TMP"
+    npm pack "$REPO"
+    # shellcheck disable=SC2086
+    npm install -g ./lark-copilot-bridge-*.tgz
+  )
+  trap - EXIT
+  cleanup
+fi
+echo "✓ 已安装 $(lark-copilot-bridge --version 2>/dev/null || echo ok)"
 
 echo ""
 echo "═══════════════════════════════════════════════════"
