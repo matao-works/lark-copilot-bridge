@@ -22,11 +22,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ma345564280/lark-copilot-bridge.git"
+    "url": "git+https://github.com/matao-works/lark-copilot-bridge.git"
   },
-  "homepage": "https://github.com/ma345564280/lark-copilot-bridge#readme",
+  "homepage": "https://github.com/matao-works/lark-copilot-bridge#readme",
   "bugs": {
-    "url": "https://github.com/ma345564280/lark-copilot-bridge/issues"
+    "url": "https://github.com/matao-works/lark-copilot-bridge/issues"
   },
   "keywords": [
     "feishu",

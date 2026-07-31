@@ -2,7 +2,7 @@
 # 全局安装 lark-copilot-bridge（无需 clone 仓库）
 set -euo pipefail
 
-REPO="github:ma345564280/lark-copilot-bridge"
+REPO="github:matao-works/lark-copilot-bridge"
 PKG="lark-copilot-bridge"
 
 need_node() {

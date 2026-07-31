@@ -46,13 +46,13 @@ copilot
 ### ① 安装
 
 ```bash
-npm install -g github:ma345564280/lark-copilot-bridge
+npm install -g github:matao-works/lark-copilot-bridge
 ```
 
 或：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ma345564280/lark-copilot-bridge/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/matao-works/lark-copilot-bridge/main/scripts/install.sh | bash
 ```
 
 请用**全局安装**。后面若要 `start` 后台常驻，不要用 `npx … start`——守护进程会记下临时缓存路径，缓存一清就挂。

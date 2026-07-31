@@ -33,13 +33,13 @@ copilot
 在终端粘贴：
 
 ```bash
-npm install -g github:ma345564280/lark-copilot-bridge
+npm install -g github:matao-works/lark-copilot-bridge
 ```
 
 或：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ma345564280/lark-copilot-bridge/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/matao-works/lark-copilot-bridge/main/scripts/install.sh | bash
 ```
 
 ### ② 检查一下（推荐）
@@ -210,7 +210,7 @@ lark-copilot-bridge
 ## 开发者
 
 ```bash
-git clone https://github.com/ma345564280/lark-copilot-bridge.git
+git clone https://github.com/matao-works/lark-copilot-bridge.git
 cd lark-copilot-bridge
 npm install
 npm run dev
