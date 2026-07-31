@@ -6,6 +6,9 @@
  *   - 下次用 --resume=<id> 恢复，copilot 自己保持上下文
  *
  * 保留历史数组作为 fallback（session-id 提取失败时）+ /status 显示。
+ *
+ * generation：每次 markRunning / clear / setCwd 递增；异步收尾写入须带上
+ * 开跑时的 generation，过期则丢弃，避免 /new 后被旧任务写回 sessionId。
  */
 import { log } from './logger.js';
 
@@ -25,32 +28,60 @@ export class SessionStore {
   private timeoutStore = new Map<string, number>();
   /** 每个 scope 的 copilot session-id（--resume 用） */
   private sessionIdStore = new Map<string, string>();
+  /** 世代号：清会话 / 换 cwd / 开跑时递增 */
+  private generation = new Map<string, number>();
 
   constructor(private maxRounds: number) {}
+
+  private bumpGeneration(scope: string): number {
+    const next = (this.generation.get(scope) ?? 0) + 1;
+    this.generation.set(scope, next);
+    return next;
+  }
+
+  generationFor(scope: string): number {
+    return this.generation.get(scope) ?? 0;
+  }
+
+  /** 写入前校验：false 表示 /new 等已使本轮失效 */
+  isGenerationCurrent(scope: string, expected: number): boolean {
+    return this.generationFor(scope) === expected;
+  }
 
   getHistory(scope: string): HistoryEntry[] {
     return this.store.get(scope) ?? [];
   }
 
-  appendRound(scope: string, userText: string, assistantText: string): void {
+  appendRound(scope: string, userText: string, assistantText: string, expectedGen?: number): boolean {
+    if (expectedGen !== undefined && !this.isGenerationCurrent(scope, expectedGen)) {
+      log.info('跳过 appendRound：scope=%s gen 已过期 want=%d have=%d', scope, expectedGen, this.generationFor(scope));
+      return false;
+    }
     const now = Date.now();
     const arr = this.store.get(scope) ?? [];
     arr.push({ role: 'user', text: userText, ts: now });
     arr.push({ role: 'assistant', text: assistantText, ts: now });
     const maxItems = this.maxRounds * 2;
     this.store.set(scope, arr.length > maxItems ? arr.slice(arr.length - maxItems) : arr);
+    return true;
   }
 
   /** copilot session-id（--resume 用） */
-  setSessionId(scope: string, id: string): void {
+  setSessionId(scope: string, id: string, expectedGen?: number): boolean {
+    if (expectedGen !== undefined && !this.isGenerationCurrent(scope, expectedGen)) {
+      log.info('跳过 setSessionId：scope=%s gen 已过期 want=%d have=%d', scope, expectedGen, this.generationFor(scope));
+      return false;
+    }
     this.sessionIdStore.set(scope, id);
+    return true;
   }
   sessionIdFor(scope: string): string | undefined {
     return this.sessionIdStore.get(scope);
   }
 
-  /** 清空会话（/new 用）：清历史 + sessionId，保留 cwd */
+  /** 清空会话（/new 用）：清历史 + sessionId，保留 cwd；递增 generation */
   clear(scope: string): void {
+    this.bumpGeneration(scope);
     this.store.delete(scope);
     this.sessionIdStore.delete(scope);
     log.info('会话 %s 已清空', scope);
@@ -58,7 +89,7 @@ export class SessionStore {
 
   setCwd(scope: string, cwd: string): void {
     this.cwdStore.set(scope, cwd);
-    this.clear(scope); // cwd 变了 session 不能复用
+    this.clear(scope); // cwd 变了 session 不能复用（clear 已 bump）
     log.info('scope %s cwd → %s', scope, cwd);
   }
   cwdFor(scope: string): string | undefined {
@@ -76,6 +107,7 @@ export class SessionStore {
   }
 
   markRunning(scope: string): AbortController {
+    this.bumpGeneration(scope);
     this.running.add(scope);
     const ac = new AbortController();
     this.abortControllers.set(scope, ac);

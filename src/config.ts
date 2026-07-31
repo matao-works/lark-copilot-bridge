@@ -15,7 +15,9 @@ import type { AppCredentials } from './types.js';
 
 export type { AppCredentials } from './types.js';
 
-export const CONFIG_DIR = resolve(homedir(), '.lark-copilot-bridge');
+export const CONFIG_DIR = process.env.LARK_COPILOT_BRIDGE_HOME
+  ? resolve(process.env.LARK_COPILOT_BRIDGE_HOME)
+  : resolve(homedir(), '.lark-copilot-bridge');
 export const CONFIG_FILE = resolve(CONFIG_DIR, 'config.json');
 export const ENV_FILE = resolve(CONFIG_DIR, '.env');
 
@@ -152,8 +154,22 @@ export function getConfigSummary(): {
     allowedUsers: resolveAllowedUsers(persisted),
     allowedChats: [...(persisted.allowedChats ?? [])],
     admins: [...(persisted.admins ?? [])],
-    workspaces: { ...(persisted.workspaces ?? {}) },
+    workspaces: readWorkspacesForSummary(persisted),
   };
+}
+
+/** config show 用：优先 workspaces.json，兼容旧 config.json.workspaces */
+function readWorkspacesForSummary(persisted: PersistedConfig): Record<string, string> {
+  const wsFile = resolve(CONFIG_DIR, 'workspaces.json');
+  if (existsSync(wsFile)) {
+    try {
+      const parsed = JSON.parse(readFileSync(wsFile, 'utf8')) as { workspaces?: Record<string, string> };
+      return { ...(parsed.workspaces ?? {}) };
+    } catch {
+      /* fall through to legacy */
+    }
+  }
+  return { ...(persisted.workspaces ?? {}) };
 }
 
 function resolveAllowedUsers(persisted: PersistedConfig): string[] {
@@ -264,28 +280,6 @@ export function saveCopilotConfig(patch: Partial<Pick<BridgeConfig, 'copilotCwd'
   } catch (err) {
     log.warn('保存 copilot 配置失败: %s', (err as Error).message);
   }
-}
-
-/** 列出所有命名工作目录别名 */
-export function listWorkspaces(): Record<string, string> {
-  return readPersisted().workspaces ?? {};
-}
-
-/** 保存/更新一个命名工作目录别名 */
-export function saveWorkspace(name: string, path: string): void {
-  const existing = readPersisted();
-  const workspaces = { ...(existing.workspaces ?? {}), [name]: path };
-  writePersisted({ ...existing, workspaces });
-}
-
-/** 删除一个命名工作目录别名 */
-export function removeWorkspace(name: string): boolean {
-  const existing = readPersisted();
-  const workspaces = { ...(existing.workspaces ?? {}) };
-  if (!(name in workspaces)) return false;
-  delete workspaces[name];
-  writePersisted({ ...existing, workspaces });
-  return true;
 }
 
 /** 群白名单：同步更新内存 config + 磁盘 */

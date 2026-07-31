@@ -22,7 +22,17 @@ import { SessionStore } from './session.js';
 import { MessageQueue } from './queue.js';
 import { handleCommand } from './commands.js';
 import { runCopilot, checkCopilotInstalled, type CopilotRunResult } from './copilot/adapter.js';
-import { runCard } from './lark/card.js';
+import { renderCard } from './lark/card.js';
+import {
+  initialState,
+  reduce,
+  markInterrupted,
+  markWallTimeout,
+  finalizeIfRunning,
+  answerText,
+  hasVisibleCardContent,
+  type RunState,
+} from './card/run-state.js';
 import { startKeepalive } from './keepalive.js';
 import { buildSystemPrompt } from './bridge-prompt.js';
 import { canUseBot } from './acl.js';
@@ -30,6 +40,17 @@ import { bridgeContextBlock, xmlBlock } from './prompt-util.js';
 import { shouldRunSetup, runSetupWizard, printSetupRequiredHint } from './setup.js';
 import type { CardActionEvent, CommentEvent } from '@larksuite/channel';
 import { log } from './logger.js';
+import { registerProcess, markConnected, unregisterProcess } from './daemon/registry.js';
+import {
+  MediaCache,
+  mediaBatchDir,
+  formatAttachmentsForPrompt,
+  formatSkippedSummary,
+  gcMediaCache,
+  isDownloadableResource,
+  type ResolvedAttachment,
+} from './media/cache.js';
+import { stripAttachmentRefs, emptyTextWithAttachmentsFallback } from './media/strip.js';
 
 process.on('unhandledRejection', (reason) => {
   log.error('未处理 rejection: %s', reason);
@@ -113,8 +134,12 @@ export async function main(): Promise<void> {
       log.warn('卡片停止被拒绝: sender=%s', senderId);
       return;
     }
-    // scope 应以该 chat 开头，避免乱停别的会话
-    if (evt.chatId && !value.scope.startsWith(evt.chatId)) {
+    // scope 须等于 chatId，或为 chatId:threadId，避免前缀误匹配
+    if (!evt.chatId) {
+      log.warn('卡片停止被拒绝: 无 chatId');
+      return;
+    }
+    if (!(value.scope === evt.chatId || value.scope.startsWith(`${evt.chatId}:`))) {
       log.warn('卡片停止 scope 与 chat 不匹配: scope=%s chat=%s', value.scope, evt.chatId);
       return;
     }
@@ -127,6 +152,13 @@ export async function main(): Promise<void> {
     onCardAction,
     (evt) => handleComment(evt, { lark, session, config, ownerOpenId }),
   );
+
+  registerProcess(creds.appId);
+  markConnected(process.pid, lark.botIdentity?.name);
+
+  void gcMediaCache().catch((err) => {
+    log.warn('附件缓存 GC 失败: %s', (err as Error).message);
+  });
 
   const keepalive = startKeepalive({
     getConnectionStatus: () => lark.getConnectionStatus(),
@@ -143,6 +175,7 @@ export async function main(): Promise<void> {
     console.log(`\n收到 ${sig}，正在关闭...`);
     keepalive.stop();
     for (const scope of session.runningScopes()) session.abort(scope);
+    unregisterProcess();
     try { await lark.disconnect(); } catch (err) { log.error('disconnect 失败: %s', (err as Error).message); }
     process.exit(0);
   };
@@ -188,11 +221,13 @@ function printReadyBanner(opts: {
   console.log(`    1. 打开飞书，搜索「${opts.botName || '刚才扫码创建的机器人'}」`);
   console.log('    2. 点进去，直接发一句话，例如：你好');
   console.log('    3. 群聊里要用的话，必须 @ 它');
+  console.log('    4. 也可直接发图片或文件');
   console.log('');
   console.log('  常用：发 /help 看命令；想换项目文件夹可运行');
   console.log('        lark-copilot-bridge setup');
   console.log('');
-  console.log('  ⚠ 请保持这个窗口开着。关掉后，飞书里的机器人会下线。');
+  console.log('  想关掉窗口仍保持在线？另开终端运行：');
+  console.log('        lark-copilot-bridge start');
   if (opts.allowedUsers.length === 0) {
     console.log('  ⚠ 当前不限制使用者。可再运行 setup 改成「仅我自己」。');
   }
@@ -241,12 +276,9 @@ async function handleMessage(msg: IncomingMessage, ctx: HandleContext): Promise<
     return;
   }
 
-  if (msg.resources && msg.resources.length > 0) {
-    await lark.sendText(msg.chatId, '⚠️ 暂不支持图片/文件，请发送文字消息。', { replyTo: msg.messageId });
-    return;
-  }
-
-  const cmdResult = await handleCommand(text, {
+  const plainCmd = stripAttachmentRefs(text);
+  const hasDownloadable = (msg.resources ?? []).some(isDownloadableResource);
+  const cmdResult = await handleCommand(plainCmd || text, {
     lark, session, queue, config,
     chatId: msg.chatId,
     scope,
@@ -257,6 +289,13 @@ async function handleMessage(msg: IncomingMessage, ctx: HandleContext): Promise<
   });
   if (cmdResult.handled) {
     queue.cancel(scope);
+    if (hasDownloadable) {
+      await lark.sendText(
+        msg.chatId,
+        '命令已执行；本条消息里的附件已忽略。若要处理附件，请单独发送图片/文件（不要带 / 命令）。',
+        { replyTo: msg.messageId, ...(msg.threadId ? { replyInThread: true } : {}) },
+      ).catch(() => undefined);
+    }
     return;
   }
 
@@ -264,8 +303,12 @@ async function handleMessage(msg: IncomingMessage, ctx: HandleContext): Promise<
   log.info('已入队: scope=%s pending=%d', scope, queue.pendingCount(scope));
 }
 
+function messagePlainText(msg: IncomingMessage): string {
+  return stripAttachmentRefs(extractText(msg));
+}
+
 function mergeMessages(batch: IncomingMessage[]): string {
-  const texts = batch.map((m) => extractText(m)).filter(Boolean);
+  const texts = batch.map((m) => messagePlainText(m));
   if (batch.length === 1) return texts[0] ?? '';
   return batch
     .map((m, i) => {
@@ -275,6 +318,26 @@ function mergeMessages(batch: IncomingMessage[]): string {
       return `[${name} (${type})]: ${t}`;
     })
     .join('\n\n');
+}
+
+function collectResourceItems(batch: IncomingMessage[]): Array<{
+  messageId: string;
+  resource: IncomingMessage['resources'][number];
+}> {
+  const items: Array<{ messageId: string; resource: IncomingMessage['resources'][number] }> = [];
+  for (const msg of batch) {
+    for (const r of msg.resources ?? []) {
+      items.push({ messageId: msg.messageId, resource: r });
+    }
+  }
+  return items;
+}
+
+function sendOptsFor(msg: IncomingMessage): { replyTo: string; replyInThread?: boolean } {
+  return {
+    replyTo: msg.messageId,
+    ...(msg.threadId ? { replyInThread: true as const } : {}),
+  };
 }
 
 async function handleComment(evt: CommentEvent, ctx: Omit<HandleContext, 'queue'>): Promise<void> {
@@ -300,6 +363,7 @@ async function handleComment(evt: CommentEvent, ctx: Omit<HandleContext, 'queue'
     log.info('评论 scope 忙，跳过');
     return;
   }
+  const runGen = session.generationFor(scope);
   try {
     const sessionId = session.sessionIdFor(scope);
     const cwd = session.cwdFor(scope) ?? config.copilotCwd;
@@ -312,7 +376,7 @@ async function handleComment(evt: CommentEvent, ctx: Omit<HandleContext, 'queue'
       sessionId,
       abortSignal: ac.signal,
     });
-    if (result.sessionId) session.setSessionId(scope, result.sessionId);
+    if (!result.aborted && result.sessionId) session.setSessionId(scope, result.sessionId, runGen);
     if (result.aborted) return;
     const reply = (result.stdout || '(无回复)').slice(0, 2000);
     await lark.replyComment(evt.fileToken, evt.fileType, evt.commentId, reply, Boolean(fetched.isWhole));
@@ -339,6 +403,7 @@ async function runOne(
   const lastMsg = batch[batch.length - 1] ?? firstMsg;
   const text = mergeMessages(batch);
   const ac = session.markRunning(scope);
+  const runGen = session.generationFor(scope);
   const chatId = lastMsg.chatId;
 
   try {
@@ -370,8 +435,50 @@ async function runOne(
       botOpenId,
       source: 'im',
     });
-    const userText = text || '（对方发来一条没有正文的消息——通常是只 @ 了你的唤醒。请简短回应。）';
+
+    const batchMediaDir = mediaBatchDir(lastMsg.messageId);
+    const media = new MediaCache(lark, batchMediaDir);
+    const resourceItems = collectResourceItems(batch);
+    const {
+      accepted: attachments,
+      skipped: mediaSkipped,
+      downloadableCount,
+    } = await media.resolve(resourceItems);
+
+    const sendOpts = sendOptsFor(lastMsg);
+
+    let plain = text.trim();
+    if (!plain && attachments.length > 0) {
+      plain = emptyTextWithAttachmentsFallback();
+    }
+
+    // 可下载附件全失败 → 失败闭合，避免伪装成「只 @ 唤醒」
+    if (downloadableCount > 0 && attachments.length === 0) {
+      const detail = formatSkippedSummary(mediaSkipped)
+        || '未能下载附件（可能已过期或权限不足）';
+      await lark.sendText(chatId, detail, sendOpts);
+      return;
+    }
+    // 仅不支持类型且无正文
+    if (resourceItems.length > 0 && attachments.length === 0 && !plain) {
+      const detail = formatSkippedSummary(mediaSkipped)
+        || '暂不支持这类附件';
+      await lark.sendText(chatId, detail, sendOpts);
+      return;
+    }
+    if (mediaSkipped.length > 0) {
+      log.warn('附件部分跳过: %s', mediaSkipped.join('; '));
+      await lark.sendText(
+        chatId,
+        formatSkippedSummary(mediaSkipped),
+        sendOpts,
+      ).catch(() => undefined);
+    }
+
+    const userText = plain || '（对方发来一条没有正文的消息——通常是只 @ 了你的唤醒。请简短回应。）';
+    const historyUserText = userText;
     const userPart = sessionId ? userText : session.buildPrompt(scope, userText);
+    const attachBlock = formatAttachmentsForPrompt(attachments);
     let topicBlock = '';
     if (lastMsg.threadId && !sessionId) {
       const topicMsgs = await lark.fetchTopicMessages(lastMsg.threadId);
@@ -379,18 +486,32 @@ async function runOne(
         topicBlock = xmlBlock('topic_context', topicMsgs.map((m) => `${m.senderName}: ${m.content}`).join('\n'));
       }
     }
-    const prompt = systemPrefix + ctxBlock + quotedBlock + topicBlock + userPart;
-    log.info('调用 copilot: promptLen=%d session=%s', prompt.length, sessionId ?? '(new)');
+    const prompt = systemPrefix + ctxBlock + quotedBlock + topicBlock + attachBlock + userPart;
+    log.info(
+      '调用 copilot: promptLen=%d session=%s attachments=%d',
+      prompt.length,
+      sessionId ?? '(new)',
+      attachments.length,
+    );
 
-    const sendOpts = {
-      replyTo: lastMsg.messageId,
-      ...(lastMsg.threadId ? { replyInThread: true as const } : {}),
-    };
-
-    let partial = '';
+    let state: RunState = initialState();
     let updateFn: ((card: object) => Promise<void>) | null = null;
     let cardClosed = false;
     let updateChain: Promise<void> = Promise.resolve();
+
+    const scheduleCardUpdate = (): void => {
+      if (cardClosed || !updateFn) return;
+      const snapshot = state;
+      const doUpdate = updateFn;
+      updateChain = updateChain
+        .then(() => {
+          if (cardClosed) return;
+          return doUpdate(renderCard(snapshot, { scope }));
+        })
+        .catch((err) => {
+          log.warn('流式卡片更新失败: %s', (err as Error).message);
+        });
+    };
 
     const agentDone = runCopilot({
       cwd,
@@ -399,63 +520,77 @@ async function runOne(
       extraArgs: config.copilotExtraArgs,
       abortSignal: ac.signal,
       sessionId,
-      onChunk: (chunk) => {
-        partial += chunk;
-        if (cardClosed || !updateFn) return;
-        const snapshot = partial;
-        const doUpdate = updateFn;
-        updateChain = updateChain
-          .then(() => {
-            if (cardClosed) return;
-            return doUpdate(runCard({ scope, phase: 'streaming', content: snapshot }));
-          })
-          .catch((err) => {
-            log.warn('流式卡片更新失败: %s', (err as Error).message);
-          });
+      attachments: attachments.map((a: ResolvedAttachment) => a.absPath),
+      // 有附件时仅放行本批次媒体目录，供 Copilot 读本地文件
+      ...(attachments.length > 0 ? { addDirs: [batchMediaDir] } : {}),
+      onEvent: (evt) => {
+        state = reduce(state, evt);
+        scheduleCardUpdate();
       },
     });
 
-    const terminalCard = (result: CopilotRunResult): object => {
-      if (result.aborted) return runCard({ scope, phase: 'interrupted', content: partial });
+    const applyTerminalOverrides = (result: CopilotRunResult): void => {
+      if (result.aborted) {
+        if (state.terminal === 'running') state = markInterrupted(state);
+        return;
+      }
       if (result.timedOut) {
-        return runCard({
-          scope,
-          phase: 'error',
-          errorMsg: timeoutMs > 0 ? `任务超时（超过 ${timeoutMs / 1000}s）` : '任务超时',
-        });
+        if (state.terminal === 'running' || state.terminal === 'wall_timeout') {
+          const sec = timeoutMs > 0 ? Math.round(timeoutMs / 1000) : 0;
+          state = markWallTimeout(
+            state,
+            sec,
+            sec > 0 ? `任务超时（超过 ${sec}s）` : '任务超时',
+          );
+        }
+        return;
       }
-      if (result.exitCode !== 0) {
-        const detail = result.stderr || result.stdout || `退出码 ${result.exitCode}`;
-        return runCard({
-          scope,
-          phase: 'error',
-          errorMsg: `copilot 运行失败：${detail.slice(0, 1500)}`,
+      if (result.exitCode !== 0 && state.terminal !== 'error' && state.terminal !== 'interrupted') {
+        const detail = (result.stderr || '').trim() || `退出码 ${result.exitCode}`;
+        state = reduce(state, {
+          type: 'error',
+          message: `copilot 运行失败：${detail.slice(0, 1500)}`,
+          terminationReason: 'error',
         });
+        return;
       }
-      return runCard({ scope, phase: 'done', content: result.stdout || '' });
+      if (state.terminal === 'running') {
+        state = finalizeIfRunning(state);
+      }
     };
 
     let streamMessageId: string | undefined;
     let deliveredViaStream = false;
+    let terminalApplied = false;
+
+    const settleTerminal = (result: CopilotRunResult): void => {
+      if (terminalApplied) return;
+      terminalApplied = true;
+      applyTerminalOverrides(result);
+    };
 
     try {
       streamMessageId = await lark.streamCard(
         chatId,
-        runCard({ scope, phase: 'thinking' }),
+        renderCard(initialState(), { scope }),
         async (update) => {
           updateFn = update;
-          if (partial) {
-            await update(runCard({ scope, phase: 'streaming', content: partial }));
-          }
+          await update(renderCard(state, { scope }));
           const result = await agentDone;
           await updateChain.catch(() => undefined);
-          if (result.sessionId) session.setSessionId(scope, result.sessionId);
-          cardClosed = true;
-          await update(terminalCard(result));
-          if (result.exitCode === 0 && result.stdout) {
-            session.appendRound(scope, text, result.stdout);
-          }
+          settleTerminal(result);
+          // 先标记已通过流式交付，避免后续 update 抛错时再走静态卡双气泡
           deliveredViaStream = true;
+          if (!result.aborted) {
+            const sid = result.sessionId || state.sessionId;
+            if (sid) session.setSessionId(scope, sid, runGen);
+          }
+          cardClosed = true;
+          await update(renderCard(state, { scope }));
+          const answer = (result.stdout || answerText(state)).trim();
+          if (!result.aborted && result.exitCode === 0 && answer) {
+            session.appendRound(scope, historyUserText, answer, runGen);
+          }
         },
         sendOpts,
       );
@@ -465,9 +600,17 @@ async function runOne(
     }
 
     const result = await agentDone;
-    if (result.sessionId) session.setSessionId(scope, result.sessionId);
+    settleTerminal(result);
+    // 流式路径已写过 session；此处再写会与中间的 /new|/cd|/ws use 竞态
+    if (!deliveredViaStream && !result.aborted) {
+      const sid = result.sessionId || state.sessionId;
+      if (sid) session.setSessionId(scope, sid, runGen);
+    }
+    const answer = (result.stdout || answerText(state)).trim();
 
-    const cleanEmpty = !result.aborted && !result.timedOut && result.exitCode === 0 && !(result.stdout || '').trim();
+    const cleanEmpty = !result.aborted && !result.timedOut && result.exitCode === 0
+      && !answer
+      && !hasVisibleCardContent(state);
     if (deliveredViaStream && cleanEmpty && streamMessageId) {
       try {
         await lark.recallMessage(streamMessageId);
@@ -479,29 +622,29 @@ async function runOne(
     }
 
     if (!deliveredViaStream) {
-      // 若占位卡已发出，先撤回再发终态，避免双气泡
       if (streamMessageId) {
         try { await lark.recallMessage(streamMessageId); } catch { /* ignore */ }
       }
       try {
-        await lark.sendCard(chatId, terminalCard(result), sendOpts);
-        if (result.exitCode === 0 && result.stdout) {
-          session.appendRound(scope, text, result.stdout);
+        await lark.sendCard(chatId, renderCard(state, { scope }), sendOpts);
+        if (!result.aborted && result.exitCode === 0 && answer) {
+          session.appendRound(scope, historyUserText, answer, runGen);
         }
         log.info('静态卡片回退已发送 exit=%s', result.exitCode);
       } catch (cardErr) {
         log.error('静态卡片也失败，纯文本兜底: %s', (cardErr as Error).message);
+        const failDetail = (result.stderr || '').trim() || `exit ${result.exitCode}`;
         const body = result.aborted
           ? '任务已被中断。'
           : result.timedOut
             ? (timeoutMs > 0 ? `任务超时（超过 ${timeoutMs / 1000}s）。` : '任务超时。')
             : result.exitCode !== 0
-              ? `copilot 失败：${(result.stderr || result.stdout || `exit ${result.exitCode}`).slice(0, 1500)}`
-              : (result.stdout || '(空回复)');
+              ? `copilot 失败：${failDetail.slice(0, 1500)}`
+              : (answer || '(空回复)');
         await lark.sendText(chatId, body.slice(0, 3500), sendOpts);
       }
     } else {
-      log.info('流式卡片完成 exit=%s outLen=%d', result.exitCode, (result.stdout || '').length);
+      log.info('流式卡片完成 exit=%s mode=%s outLen=%d', result.exitCode, result.outputMode, answer.length);
     }
   } catch (err) {
     const detail = (err as Error).message || String(err);

@@ -11,9 +11,6 @@ import type { SessionStore } from './session.js';
 import type { MessageQueue } from './queue.js';
 import type { BridgeConfig } from './config.js';
 import {
-  listWorkspaces,
-  saveWorkspace,
-  removeWorkspace,
   validateWorkspaceDir,
   addAllowedChat,
   removeAllowedChat,
@@ -21,9 +18,15 @@ import {
   removeAdmin,
   saveCopilotConfig,
 } from './config.js';
+import * as workspaces from './workspaces.js';
 import { infoCard } from './lark/card.js';
 import { isPrivileged } from './acl.js';
 import { log } from './logger.js';
+import { getServiceAdapter } from './daemon/service-adapter.js';
+import { readLive } from './daemon/registry.js';
+import { mediaCacheStats } from './media/cache.js';
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 export interface CommandContext {
   lark: LarkBridge;
@@ -81,14 +84,19 @@ const HELP_BODY = `**怎么用**
 
 - \`/new\` — 换个新话题
 - \`/stop\` — 停下正在做的事（也可点卡片「终止」）
-- \`/status\` — 看看当前状态
+- \`/status\` — 当前状态（cwd / 会话 / 队列 / 后台服务 / 附件缓存）
 - \`/whoami\` — 查看我的用户编号（给管理员用）
 - \`/help\` — 本说明
 
 **进阶（一般不用）**
 
 - \`/cd 文件夹路径\` — 换项目文件夹（需管理员）
-- \`/ws\` — 工作文件夹别名
+- \`/ws\` — 命名工作目录（需管理员）
+  - \`/ws\` / \`/ws list\` — 列出别名
+  - \`/ws add <name> [path]\` — 保存别名（默认当前 cwd）
+  - \`/ws save <name>\` — 把当前 cwd 存成别名
+  - \`/ws use <name>\` — 切换到别名目录
+  - \`/ws rm <name>\` — 删除别名
 - \`/timeout\` — 调整超时
 - \`/invite\` \`/remove\` — 白名单 / 管理员
 `;
@@ -130,11 +138,12 @@ export async function handleCommand(text: string, ctx: CommandContext): Promise<
 
     case '/stop': {
       ctx.session.abort(ctx.scope);
+      await replyText(ctx, '已发送终止信号。');
       return { handled: true };
     }
 
     case '/status': {
-      await replyCard(ctx, statusCard(ctx));
+      await replyCard(ctx, buildStatusCard(ctx));
       return { handled: true };
     }
 
@@ -237,18 +246,18 @@ export async function handleCommand(text: string, ctx: CommandContext): Promise<
 }
 
 async function handleWs(arg: string, ctx: CommandContext): Promise<CommandResult> {
-  const [sub, ...rest] = arg.split(/\s+/);
-  const name = rest.join(' ');
+  const [sub, wsName, ...pathParts] = arg.split(/\s+/);
+  const pathArg = pathParts.join(' ');
 
   switch (sub) {
     case '':
     case 'list': {
-      const workspaces = listWorkspaces();
+      const wsMap = workspaces.list();
       const currentCwd = ctx.session.cwdFor(ctx.scope) ?? ctx.config.copilotCwd;
-      const entries = Object.entries(workspaces);
+      const entries = Object.entries(wsMap);
       let body: string;
       if (entries.length === 0) {
-        body = `当前 cwd：\`${currentCwd}\`\n\n暂无命名工作目录。\n💡 \`/ws save <name>\` 保存别名`;
+        body = `当前 cwd：\`${currentCwd}\`\n\n暂无命名工作目录。\n💡 \`/ws add <name>\` 或 \`/ws save <name>\` 保存别名`;
       } else {
         const lines = entries.map(
           ([n, p]) => `- **${n}** → \`${p}\`${p === currentCwd ? '  ← 当前' : ''}`,
@@ -258,48 +267,67 @@ async function handleWs(arg: string, ctx: CommandContext): Promise<CommandResult
       await replyCard(ctx, infoCard('📂 工作目录', body));
       return { handled: true };
     }
-    case 'save': {
-      if (!name) {
-        await replyText(ctx, '用法：`/ws save <name>`');
+    case 'add': {
+      if (!wsName) {
+        await replyText(ctx, '用法：`/ws add <name> [path]`');
         return { handled: true };
       }
       const cwd = ctx.session.cwdFor(ctx.scope) ?? ctx.config.copilotCwd;
-      saveWorkspace(name, cwd);
-      await replyText(ctx, `✓ 已保存：\`${name}\` → ${cwd}`);
-      return { handled: true };
-    }
-    case 'use': {
-      if (!name) {
-        await replyText(ctx, '用法：`/ws use <name>`');
-        return { handled: true };
-      }
-      const path = listWorkspaces()[name];
-      if (!path) {
-        await replyText(ctx, `❌ 未找到别名 \`${name}\``);
-        return { handled: true };
-      }
+      const pathToSave = pathArg || cwd;
       try {
-        const abs = validateWorkspaceDir(path);
-        if (ctx.session.isRunning(ctx.scope)) ctx.session.abort(ctx.scope);
-        ctx.session.setCwd(ctx.scope, abs);
-        saveCopilotConfig({ copilotCwd: abs });
-        await replyText(ctx, `✓ 已切换到 \`${name}\` → ${abs}\n（本会话已重置；下次启动默认也用此目录）`);
+        const abs = workspaces.save(wsName, pathToSave);
+        await replyText(ctx, `✓ 已保存：\`${wsName}\` → ${abs}`);
       } catch (err) {
         await replyText(ctx, `❌ ${(err as Error).message}`);
       }
       return { handled: true };
     }
-    case 'remove': {
-      if (!name) {
-        await replyText(ctx, '用法：`/ws remove <name>`');
+    case 'save': {
+      if (!wsName) {
+        await replyText(ctx, '用法：`/ws save <name>`');
         return { handled: true };
       }
-      const ok = removeWorkspace(name);
-      await replyText(ctx, ok ? `✓ 已删除 \`${name}\`` : `❌ 未找到 \`${name}\``);
+      const cwd = ctx.session.cwdFor(ctx.scope) ?? ctx.config.copilotCwd;
+      try {
+        const abs = workspaces.save(wsName, cwd);
+        await replyText(ctx, `✓ 已保存：\`${wsName}\` → ${abs}`);
+      } catch (err) {
+        await replyText(ctx, `❌ ${(err as Error).message}`);
+      }
+      return { handled: true };
+    }
+    case 'use': {
+      if (!wsName) {
+        await replyText(ctx, '用法：`/ws use <name>`');
+        return { handled: true };
+      }
+      try {
+        const abs = workspaces.use(wsName);
+        if (ctx.session.isRunning(ctx.scope)) ctx.session.abort(ctx.scope);
+        ctx.session.setCwd(ctx.scope, abs);
+        saveCopilotConfig({ copilotCwd: abs });
+        await replyText(ctx, `✓ 已切换到 \`${wsName}\` → ${abs}\n（本会话已重置；下次启动默认也用此目录）`);
+      } catch (err) {
+        await replyText(ctx, `❌ ${(err as Error).message}`);
+      }
+      return { handled: true };
+    }
+    case 'rm':
+    case 'remove': {
+      if (!wsName) {
+        await replyText(ctx, '用法：`/ws rm <name>` 或 `/ws remove <name>`');
+        return { handled: true };
+      }
+      try {
+        const ok = workspaces.remove(wsName);
+        await replyText(ctx, ok ? `✓ 已删除 \`${wsName}\`` : `❌ 未找到 \`${wsName}\``);
+      } catch (err) {
+        await replyText(ctx, `❌ ${(err as Error).message}`);
+      }
       return { handled: true };
     }
     default: {
-      await replyText(ctx, '用法：`/ws list|save|use|remove`');
+      await replyText(ctx, '用法：`/ws list|add|save|use|rm`');
       return { handled: true };
     }
   }
@@ -333,17 +361,98 @@ async function handleTimeout(arg: string, ctx: CommandContext): Promise<CommandR
   return { handled: true };
 }
 
-function statusCard(ctx: CommandContext): object {
+function shortId(id: string | undefined, keep = 8): string {
+  if (!id) return '无';
+  if (id.length <= keep * 2 + 1) return id;
+  return `${id.slice(0, keep)}…${id.slice(-4)}`;
+}
+
+function samePath(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
+}
+
+function daemonStatusLine(appId: string): string {
+  const adapter = getServiceAdapter();
+  if (!adapter) return '当前系统不支持 OS 守护进程';
+  if (!adapter.fileExists()) return `未注册（可用 \`start\` 后台常驻 · ${adapter.platformName}）`;
+  if (!adapter.isRunning()) return `已注册但未运行（\`start\` 可拉起 · ${adapter.platformName}）`;
+  const { pid: pidStr } = adapter.parseStatus(adapter.describeStatus());
+  const pid = pidStr ? Number(pidStr) : NaN;
+  const pidOk = Number.isFinite(pid) && pid > 0;
+  const entry = pidOk
+    ? readLive().find((e) => e.pid === pid && e.appId === appId)
+    : readLive().find((e) => e.appId === appId && (e.ready || e.botName));
+  const self = pidOk && pid === process.pid ? '（本进程）' : '';
+  const bits = [
+    '运行中',
+    pidOk ? `pid ${pid}${self}` : undefined,
+    entry?.botName ? `bot ${entry.botName}` : undefined,
+    adapter.platformName,
+  ].filter(Boolean);
+  return bits.join(' · ');
+}
+
+function buildStatusCard(ctx: CommandContext): object {
+  const privileged = isPrivileged(ctx.senderId, ctx.config, ctx.ownerOpenId);
   const running = ctx.session.isRunning(ctx.scope);
   const cwd = ctx.session.cwdFor(ctx.scope) ?? ctx.config.copilotCwd;
   const pending = ctx.queue.pendingCount(ctx.scope);
   const timeout = ctx.session.idleTimeoutFor(ctx.scope);
-  const timeoutDesc = timeout === undefined ? '默认' : timeout === 0 ? '关闭' : `${timeout} 分钟`;
-  const body = [
-    `**状态**: ${running ? '处理中' : '空闲'}${pending > 0 ? `（队列 ${pending}）` : ''}`,
-    `**cwd**: \`${cwd}\``,
-    `**超时**: ${timeoutDesc}`,
-    `**scope**: \`${ctx.scope}\``,
-  ].join('\n');
-  return infoCard('📊 当前状态', body);
+  const scopeTimeoutDesc = timeout === undefined
+    ? '跟随默认'
+    : timeout === 0
+      ? '关闭'
+      : `${timeout} 分钟`;
+  const defaultTimeoutMin = Math.round(ctx.config.copilotTimeout / 60_000);
+  const defaultTimeoutDesc = ctx.config.copilotTimeout > 0
+    ? `${defaultTimeoutMin} 分钟`
+    : '不限制';
+
+  const wsMap = workspaces.list();
+  const wsEntries = Object.entries(wsMap);
+  const matchedAlias = wsEntries.find(([, p]) => samePath(p, cwd))?.[0];
+  const wsLine = wsEntries.length === 0
+    ? '无'
+    : matchedAlias
+      ? `${wsEntries.length} 个（当前 \`${matchedAlias}\`）`
+      : `${wsEntries.length} 个`;
+
+  const sessionId = ctx.session.sessionIdFor(ctx.scope);
+  const bot = ctx.lark.botIdentity;
+
+  const lines = [
+    `**本会话**`,
+    `· 状态：${running ? '处理中' : '空闲'}${pending > 0 ? ` · 队列 ${pending}` : ''}`,
+    `· cwd：\`${cwd}\``,
+    `· /ws：${wsLine}`,
+    `· Copilot session：\`${shortId(sessionId)}\``,
+    `· 超时：本会话 ${scopeTimeoutDesc}（默认 ${defaultTimeoutDesc}）`,
+    `· scope：\`${ctx.scope}\``,
+  ];
+
+  if (privileged) {
+    const media = mediaCacheStats();
+    const runningScopes = ctx.session.runningScopes();
+    lines.push(
+      '',
+      `**本机**`,
+      `· 机器人：${bot?.name ? `${bot.name}` : '（未知）'}${bot?.openId ? ` · \`${shortId(bot.openId, 6)}\`` : ''}`,
+      `· 后台常驻：${daemonStatusLine(ctx.config.credentials.appId)}`,
+      `· 全局进行中：${runningScopes.length === 0 ? '无' : `${runningScopes.length} 个 scope`}`,
+      `· 附件缓存：${media.label}`,
+    );
+  } else {
+    lines.push(
+      '',
+      `**本机**`,
+      `· 机器人：${bot?.name ? `${bot.name}` : '（未知）'}`,
+      `· 后台常驻 / 全局任务 / 缓存：仅管理员可见`,
+    );
+  }
+
+  return infoCard('📊 当前状态', lines.join('\n'));
 }

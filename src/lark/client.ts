@@ -170,7 +170,7 @@ export class LarkBridge {
       const items = res?.data?.items ?? res?.data?.messages ?? [];
       return items.slice(0, maxMessages).map((it: any) => ({
         senderName: it.sender?.id ?? '?',
-        content: it.body?.content ?? '',
+        content: parseTopicBodyContent(it.body?.content),
       }));
     } catch (err) {
       log.warn('拉取话题上游失败: %s', (err as Error).message);
@@ -259,10 +259,36 @@ export class LarkBridge {
     return (result as any)?.messageId as string | undefined;
   }
 
+  /** 下载消息内附件到本地文件（避免整文件进内存） */
+  async downloadResourceToFile(
+    messageId: string,
+    fileKey: string,
+    type: 'image' | 'file',
+    destPath: string,
+  ): Promise<{ contentType?: string }> {
+    return this.channel.downloadResourceToFile(messageId, fileKey, type, destPath);
+  }
+
   /** 断开连接 */
   async disconnect(): Promise<void> {
     await (this.channel as any).disconnect?.();
   }
+}
+
+
+/** body.content 常为 JSON 字符串 `{"text":"..."}`，解析出正文；失败则回落原串 */
+function parseTopicBodyContent(raw: unknown): string {
+  if (raw == null) return '';
+  const s = typeof raw === 'string' ? raw : String(raw);
+  try {
+    const parsed = JSON.parse(s) as { text?: unknown };
+    if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') {
+      return parsed.text;
+    }
+  } catch {
+    /* 非 JSON，原样返回 */
+  }
+  return s;
 }
 
 /**

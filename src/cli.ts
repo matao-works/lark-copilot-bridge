@@ -14,9 +14,18 @@ import {
   saveCredentials,
   validateWorkspaceDir,
 } from './config.js';
-import { getCopilotVersion } from './copilot/adapter.js';
+import { getCopilotVersion, supportsCopilotJsonOutput } from './copilot/adapter.js';
 import { runSetupWizard, printSetupRequiredHint } from './setup.js';
 import { registerAppByQR } from './lark/client.js';
+import {
+  runServiceStart,
+  runServiceStop,
+  runServiceRestart,
+  runServiceStatus,
+  runServiceUnregister,
+} from './daemon/service-cli.js';
+import { getServiceAdapter } from './daemon/service-adapter.js';
+import { daemonStdoutPath, daemonStderrPath } from './daemon/paths.js';
 
 export function getPackageVersion(): string {
   try {
@@ -39,8 +48,18 @@ export function printHelp(): void {
   console.log(`lark-copilot-bridge ${getPackageVersion()}
 在飞书里跟你电脑上的 GitHub Copilot 聊天。
 
-常用：
-  lark-copilot-bridge           启动（第一次会引导设置）
+前台：
+  lark-copilot-bridge           前台启动（第一次会引导设置）
+  lark-copilot-bridge run       同上（供后台服务调用）
+
+后台常驻（需先全局安装，不要用 npx start）：
+  lark-copilot-bridge start     安装并启动 OS 守护进程
+  lark-copilot-bridge stop      停止并取消开机自启
+  lark-copilot-bridge restart   重启后台服务
+  lark-copilot-bridge status    查看是否在跑
+  lark-copilot-bridge unregister  清除守护进程注册（保留配置）
+
+其它：
   lark-copilot-bridge setup     重新选择项目文件夹 / 谁能用
   lark-copilot-bridge doctor    检查是否准备好了
   lark-copilot-bridge config    查看当前设置
@@ -55,7 +74,8 @@ export function printHelp(): void {
   · Node.js 20 或更高
   · 已登录的 GitHub Copilot 命令行（需要 Copilot 订阅）
 
-飞书里可发：/help  /whoami  /new  /stop  /cd …
+飞书里可发：/help  /whoami  /new  /stop  /cd  /ws …
+也可直接发图片或文件，会下载到本机后交给 Copilot。
 `);
 }
 
@@ -75,6 +95,12 @@ export function printConfig(): void {
     console.log(`你的账号: ${s.creatorOpenId ?? '未记录（建议 logout 后重新扫码）'}`);
   }
   console.log(`项目文件夹: ${s.copilotCwd}`);
+  const wsNames = Object.keys(s.workspaces);
+  if (wsNames.length === 0) {
+    console.log('命名工作目录: 无（飞书里发 /ws add <name>）');
+  } else {
+    console.log(`命名工作目录: ${wsNames.length} 个（${wsNames.slice(0, 5).join(', ')}${wsNames.length > 5 ? '…' : ''}）`);
+  }
   console.log(`单次最长: ${Math.round((s.copilotTimeout ?? 0) / 60_000)} 分钟`);
   if (s.allowedUsers.length === 0) {
     console.log('谁能用: 不限制（有风险）');
@@ -149,6 +175,18 @@ export async function runDoctor(): Promise<number> {
     console.log('       然后输入 copilot，按提示登录（需要 Copilot 订阅）');
   }
 
+  if (copilot.ok) {
+    const jsonOk = await supportsCopilotJsonOutput();
+    if (jsonOk) {
+      ok('支持结构化流式输出（--output-format json）→ 卡片可显示工具调用');
+    } else {
+      warn(
+        '当前 Copilot 不支持 json 输出格式',
+        '卡片只能显示纯文本。请升级 Copilot CLI 到 1.0.49 或更高',
+      );
+    }
+  }
+
   if (existsSync(CONFIG_DIR)) ok('已有本机设置目录');
   else warn('还没有设置目录', '第一次启动时会自动创建');
 
@@ -197,12 +235,24 @@ export async function runDoctor(): Promise<number> {
     warn('首次设置向导尚未完成', '启动时会询问，或运行 lark-copilot-bridge setup');
   }
 
+  const adapter = getServiceAdapter();
+  if (adapter) {
+    if (adapter.isRunning()) {
+      ok(`后台常驻已在跑（${adapter.platformName}）`);
+      console.log(`    日志: ${daemonStdoutPath()}`);
+      console.log(`          ${daemonStderrPath()}`);
+    } else if (adapter.fileExists()) {
+      warn('后台服务已注册但当前没在跑', '运行：lark-copilot-bridge start');
+    } else {
+      console.log(`· 后台常驻未注册（可选：lark-copilot-bridge start）`);
+    }
+  }
+
   console.log('');
   if (failed === 0) {
-    console.log('看起来可以了。在项目准备好后运行：');
-    console.log('  lark-copilot-bridge');
-    console.log('');
-    console.log('记住：启动后请保持窗口开着，关掉就会下线。');
+    console.log('看起来可以了。任选一种启动方式：');
+    console.log('  lark-copilot-bridge          # 前台（关掉窗口会下线）');
+    console.log('  lark-copilot-bridge start    # 后台常驻（推荐）');
     return 0;
   }
   console.log(`还有 ${failed} 处需要先处理好，再启动。`);
@@ -236,6 +286,24 @@ export async function dispatchCli(argv: string[]): Promise<number | null> {
   }
   if (head === 'logout' || head === 'reset') {
     return runLogout();
+  }
+  if (head === 'run') {
+    return null;
+  }
+  if (head === 'start') {
+    return runServiceStart();
+  }
+  if (head === 'stop') {
+    return runServiceStop();
+  }
+  if (head === 'restart') {
+    return runServiceRestart();
+  }
+  if (head === 'status') {
+    return runServiceStatus();
+  }
+  if (head === 'unregister') {
+    return runServiceUnregister();
   }
 
   if (head.startsWith('-')) {
