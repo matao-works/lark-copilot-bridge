@@ -14,7 +14,7 @@
 
 回复写在**同一张流式卡片**上：思考、工具调用、正文会原地更新。
 
-![飞书消息经小黑塞进本机文件夹](../assets/guide-illustrations/01-bridge-funnel.png)
+![飞书遥控本机；项目里干活；再回一张卡](../assets/guide-illustrations/01-bridge-funnel.png)
 
 你不必会写代码。机器人跑在**你自己的电脑**上——飞书只是遥控器。电脑休眠或关机，机器人也会停。
 
