@@ -2,7 +2,7 @@
   "name": "lark-copilot-bridge",
   "version": "0.1.6",
   "description": "在飞书（Feishu/Lark）里用 GitHub Copilot CLI 改代码 — Feishu bot bridge to local Copilot",
-  "author": "matao-works",
+  "author": "Tao <matao.19901021@gmail.com> (https://github.com/matao-works)",
   "publishConfig": {
     "access": "public"
   },
