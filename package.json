@@ -1,7 +1,11 @@
 {
   "name": "lark-copilot-bridge",
   "version": "0.1.6",
-  "description": "在飞书里和本地 GitHub Copilot CLI 对话",
+  "description": "在飞书（Feishu/Lark）里用 GitHub Copilot CLI 改代码 — Feishu bot bridge to local Copilot",
+  "author": "matao-works",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "lark-copilot-bridge": "dist/lark-copilot-bridge.js"
@@ -31,10 +35,15 @@
   "keywords": [
     "feishu",
     "lark",
+    "飞书",
+    "飞书机器人",
     "copilot",
     "github-copilot",
+    "copilot-cli",
     "bridge",
-    "chatbot"
+    "chatbot",
+    "feishu-bot",
+    "lark-bot"
   ],
   "engines": {
     "node": ">=20.12.0"

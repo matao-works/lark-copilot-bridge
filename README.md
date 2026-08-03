@@ -1,12 +1,32 @@
 # lark-copilot-bridge
 
+[![npm](https://img.shields.io/npm/v/lark-copilot-bridge.svg)](https://www.npmjs.com/package/lark-copilot-bridge)
+[![Node.js](https://img.shields.io/node/v/lark-copilot-bridge.svg)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/v/release/matao-works/lark-copilot-bridge)](https://github.com/matao-works/lark-copilot-bridge/releases)
+
+**在飞书（Feishu / Lark）里远程使用本地 GitHub Copilot CLI** —— 扫码创建机器人，用手机指挥电脑读文件、改代码。
+
 让你在 **飞书** 里，跟自己电脑上的 **GitHub Copilot** 对话。  
 Copilot 会在你指定的文件夹里读文件、改代码；回复以**流式卡片**展示——思考过程、工具调用、正文会实时更新在同一张卡片上。
 
+Use **Feishu / Lark** to chat with **GitHub Copilot CLI** on your own machine. Streamed cards show thinking, tool calls, and the reply in one place. Scan a QR code once, then message from your phone.
+
+![飞书遥控本机 Copilot：消息进来，项目里干活，流式卡片回去](assets/guide-illustrations/01-bridge-funnel.png)
+
 > 你不需要会写代码才能用。推荐用 `start` 做成后台常驻；前台跑也可以，但要保持终端窗口开着。
 
-图文上手指南（小黑配图）：[docs/guide.md](docs/guide.md)
+图文上手指南（小黑配图）：[docs/guide.md](docs/guide.md) · 更新记录：[CHANGELOG.md](CHANGELOG.md)
 
+### 这个项目解决什么问题
+
+| 你想… | 用这个项目 |
+|---|---|
+| 出门后还能让 Copilot 改本机代码 | 飞书私聊 / 群聊 @ 机器人即可 |
+| 不想开远程桌面或 SSH | 扫码绑定，消息即指令 |
+| 边看思考过程边等结果 | 同一张流式卡片实时更新 |
+
+和 SSH / 远程桌面不同：不用盯着电脑屏幕，手机飞书里发一句就能让本机 Copilot 干活，过程显示在同一张卡片上。
 ---
 
 ## 你需要先准备什么
@@ -33,12 +53,14 @@ copilot
 在终端粘贴：
 
 ```bash
-npm install -g github:matao-works/lark-copilot-bridge
+npm install -g lark-copilot-bridge
 ```
 
-或：
+也可从 GitHub 安装，或一键脚本：
 
 ```bash
+npm install -g github:matao-works/lark-copilot-bridge
+# 或
 curl -fsSL https://raw.githubusercontent.com/matao-works/lark-copilot-bridge/main/scripts/install.sh | bash
 ```
 

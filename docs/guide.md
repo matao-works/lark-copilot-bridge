@@ -46,12 +46,14 @@ copilot
 ### ① 安装
 
 ```bash
-npm install -g github:matao-works/lark-copilot-bridge
+npm install -g lark-copilot-bridge
 ```
 
-或：
+也可从 GitHub 安装，或一键脚本：
 
 ```bash
+npm install -g github:matao-works/lark-copilot-bridge
+# 或
 curl -fsSL https://raw.githubusercontent.com/matao-works/lark-copilot-bridge/main/scripts/install.sh | bash
 ```
 

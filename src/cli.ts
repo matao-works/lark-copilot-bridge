@@ -68,7 +68,7 @@ export function printHelp(): void {
   lark-copilot-bridge --help
 
 安装：
-  npm install -g github:matao-works/lark-copilot-bridge
+  npm install -g lark-copilot-bridge
 
 你需要提前有：
   · Node.js 20 或更高

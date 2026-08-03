@@ -1661,7 +1661,7 @@ function warnNpxIfNeeded() {
     if (looksLikeNpxCachePath(bridgeEntryPath)) {
       console.warn("\u26A0 \u68C0\u6D4B\u5230\u901A\u8FC7 npx \u542F\u52A8\u3002\u540E\u53F0\u670D\u52A1\u4F1A\u8BB0\u4E0B\u4E34\u65F6\u8DEF\u5F84\uFF0C\u7F13\u5B58\u6E05\u7406\u540E\u4F1A\u5931\u6548\u3002");
       console.warn("  \u8BF7\u5148\u5168\u5C40\u5B89\u88C5\u518D start\uFF1A");
-      console.warn("    npm install -g github:matao-works/lark-copilot-bridge");
+      console.warn("    npm install -g lark-copilot-bridge");
       console.warn("");
     }
   } catch {
@@ -1884,7 +1884,7 @@ function printHelp() {
   lark-copilot-bridge --help
 
 \u5B89\u88C5\uFF1A
-  npm install -g github:matao-works/lark-copilot-bridge
+  npm install -g lark-copilot-bridge
 
 \u4F60\u9700\u8981\u63D0\u524D\u6709\uFF1A
   \xB7 Node.js 20 \u6216\u66F4\u9AD8

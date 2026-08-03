@@ -18,7 +18,7 @@ function warnNpxIfNeeded(): void {
     if (looksLikeNpxCachePath(bridgeEntryPath)) {
       console.warn('⚠ 检测到通过 npx 启动。后台服务会记下临时路径，缓存清理后会失效。');
       console.warn('  请先全局安装再 start：');
-      console.warn('    npm install -g github:matao-works/lark-copilot-bridge');
+      console.warn('    npm install -g lark-copilot-bridge');
       console.warn('');
     }
   } catch { /* ignore */ }

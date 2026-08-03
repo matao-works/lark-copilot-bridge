@@ -2,8 +2,9 @@
 # 全局安装 lark-copilot-bridge（无需 clone 仓库）
 set -euo pipefail
 
-REPO="github:matao-works/lark-copilot-bridge"
 PKG="lark-copilot-bridge"
+NPM_PKG="lark-copilot-bridge"
+GITHUB_PKG="github:matao-works/lark-copilot-bridge"
 
 need_node() {
   if ! command -v node >/dev/null 2>&1; then
@@ -21,15 +22,19 @@ need_node() {
 
 need_node
 
-echo "→ 安装 ${PKG}（从 GitHub）..."
-if ! npm install -g "$REPO"; then
+echo "→ 安装 ${PKG}（优先 npm）..."
+if npm install -g "$NPM_PKG"; then
+  :
+elif npm install -g "$GITHUB_PKG"; then
+  echo "→ npm 包不可用，已改从 GitHub 安装"
+else
   echo "→ 直接安装失败，改用 pack 回退…"
   TMP="$(mktemp -d)"
   cleanup() { rm -rf "$TMP"; }
   trap cleanup EXIT
   (
     cd "$TMP"
-    npm pack "$REPO"
+    npm pack "$GITHUB_PKG"
     # shellcheck disable=SC2086
     npm install -g ./lark-copilot-bridge-*.tgz
   )
